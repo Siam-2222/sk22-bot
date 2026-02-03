@@ -1,8 +1,15 @@
 import os
 import ccxt
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 import requests
+
+# พยายามนำเข้า pandas_ta ถ้าไม่ได้จะใช้ระบบคำนวณสำรอง
+try:
+    import pandas_ta as ta
+    HAS_TA = True
+except ImportError:
+    HAS_TA = False
 
 SYMBOL = 'BTC/USDT'
 TIMEFRAME = '15m'
@@ -14,64 +21,58 @@ def send_telegram(msg):
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     try:
         requests.post(url, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
-    except:
-        pass
+    except: pass
 
 def check_signal():
     try:
         exchange = ccxt.binance()
-        bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
+        bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=300)
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
 
-        # --- คำนวณตามสูตร Pine Script ---
-        df['rsi'] = ta.rsi(df['close'], length=14)
-        
-        # Stoch RSI
-        stoch = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
-        # ดึง Column K และ D โดยใช้ตำแหน่ง (Position) เพื่อป้องกันชื่อ Column ต่างเวอร์ชัน
-        df['k'] = stoch.iloc[:, 0]
-        df['d'] = stoch.iloc[:, 1]
-        
-        df['ema200'] = ta.ema(df['close'], length=200)
+        # --- Indicator Calculation ---
+        if HAS_TA:
+            df['rsi'] = ta.rsi(df['close'], length=14)
+            stoch = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
+            df['k'], df['d'] = stoch.iloc[:, 0], stoch.iloc[:, 1]
+            df['ema200'] = ta.ema(df['close'], length=200)
+        else:
+            # ระบบสำรอง (Manual Calculation) กรณีติดตั้ง library ไม่สำเร็จ
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+            # EMA 200
+            df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+            # Stoch RSI (Simplified)
+            rsi_min = df['rsi'].rolling(window=14).min()
+            rsi_max = df['rsi'].rolling(window=14).max()
+            df['k'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min)
+            df['d'] = df['k'].rolling(window=3).mean()
 
-        # Pivot Points (Swing Left/Right 5)
+        # Pivot Points
         w = 5
         df['p_high'] = df['high'].iloc[w:-w].where((df['high'] == df['high'].rolling(w*2+1, center=True).max()))
         df['p_low'] = df['low'].iloc[w:-w].where((df['low'] == df['low'].rolling(w*2+1, center=True).min()))
 
-        # Divergence Detection
+        # Divergence
         ph = df.dropna(subset=['p_high']).tail(2)
         pl = df.dropna(subset=['p_low']).tail(2)
-        is_bull_div, is_bear_div = False, False
+        is_bull, is_bear = False, False
+        if len(ph) >= 2 and ph['high'].iloc[-1] > ph['high'].iloc[-2] and ph['rsi'].iloc[-1] < ph['rsi'].iloc[-2]: is_bear = True
+        if len(pl) >= 2 and pl['low'].iloc[-1] < pl['low'].iloc[-2] and pl['rsi'].iloc[-1] > pl['rsi'].iloc[-2]: is_bull = True
 
-        if len(ph) >= 2:
-            if ph['high'].iloc[-1] > ph['high'].iloc[-2] and ph['rsi'].iloc[-1] < ph['rsi'].iloc[-2]:
-                is_bear_div = True
-        if len(pl) >= 2:
-            if pl['low'].iloc[-1] < pl['low'].iloc[-2] and pl['rsi'].iloc[-1] > pl['rsi'].iloc[-2]:
-                is_bull_div = True
+        last, prev = df.iloc[-1], df.iloc[-2]
+        trend = "Above EMA200" if last['close'] > last['ema200'] else "Below EMA200"
 
         # Signal Logic
-        last, prev = df.iloc[-1], df.iloc[-2]
-        cross_over = prev['k'] < prev['d'] and last['k'] > last['d']
-        cross_under = prev['k'] > prev['d'] and last['k'] < last['d']
+        if (prev['k'] < prev['d'] and last['k'] > last['d']) and (last['k'] < 25 or (is_bull and last['k'] < 50)):
+            send_telegram(f"🚀 *[SK22 LONG]*\nPrice: {last['close']}\nTrend: {trend}" + ("\n🔥 Bull Div" if is_bull else ""))
+        elif (prev['k'] > prev['d'] and last['k'] < last['d']) and (last['k'] > 75 or (is_bear and last['k'] < 50)):
+            send_telegram(f"🔻 *[SK22 SHORT]*\nPrice: {last['close']}\nTrend: {trend}" + ("\n🔥 Bear Div" if is_bear else ""))
 
-        # Trend Notification
-        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
-        
-        # เงื่อนไขการส่ง Alert
-        if cross_over and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi']):
-            msg = f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {trend}"
-            if is_bull_div: msg += "\n🔥 *+ Bull Div*"
-            send_telegram(msg)
-            
-        elif cross_under and (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and (last['rsi'] <= prev['rsi']):
-            msg = f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {trend}"
-            if is_bear_div: msg += "\n🔥 *+ Bear Div*"
-            send_telegram(msg)
-
-        print(f"Check Complete: {SYMBOL} K={last['k']:.2f}")
-
+        print(f"Run Finished. Status: {'Full' if HAS_TA else 'Lite Mode'}")
     except Exception as e:
         print(f"Error: {e}")
 

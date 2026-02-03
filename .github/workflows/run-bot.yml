@@ -2,8 +2,8 @@ name: SK22-Auto-Run
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # สั่งให้บอทตื่นมาเช็คทุก 15 นาที
-  workflow_dispatch:        # ช่วยให้เรามีปุ่มกดมือ (Manual) เพื่อทดสอบได้
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ccxt requests "pandas<2.0.0"
+          pip install ccxt requests pandas
           pip install https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
 
       - name: Run SK22 Bot

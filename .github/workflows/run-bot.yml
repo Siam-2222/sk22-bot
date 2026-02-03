@@ -19,8 +19,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install ccxt pandas pandas-ta requests
+          python -m pip install --upgrade pip
+          pip install ccxt requests "pandas<2.0.0"
+          pip install https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
 
       - name: Run SK22 Bot
         env:

@@ -1,88 +1,92 @@
-ccxt
-requests
-numpy<2.0.0
-pandas<2.0.0
-pandas-ta==0.3.14b0
+import os
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import requests
 
-# --- คอนฟิก (ดึงค่าจาก GitHub Secrets) ---
+# --- Config ---
 SYMBOL = 'BTC/USDT'
 TIMEFRAME = '15m'
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
 def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-    payload = {'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, data=payload)
-    except:
-        pass
+        requests.post(url, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'})
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 def check_signal():
     try:
         exchange = ccxt.binance()
+        # ดึงข้อมูลเผื่อไว้ 500 แท่งเพื่อคำนวณ EMA200 และ Pivot
         bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
 
-        # [1] RSI / Stoch RSI / EMA
+        # [1] คำนวณ RSI และ Stochastic RSI (ตามสูตร Pine Script)
         df['rsi'] = ta.rsi(df['close'], length=14)
-        # คำนวณ Stoch RSI ตามสูตร SK 22
-        stoch = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
-        df['k'] = stoch.iloc[:, 0]
-        df['d'] = stoch.iloc[:, 1]
+        stoch_df = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
+        df['k'] = stoch_df.iloc[:, 0]
+        df['d'] = stoch_df.iloc[:, 1]
         df['ema200'] = ta.ema(df['close'], length=200)
 
         # [2] ระบบ Pivot High/Low (Swing Left 5, Right 5)
+        # หมายเหตุ: Pivot จะคอนเฟิร์มช้าไป 5 แท่ง (swing_right)
         window = 5
-        df['p_high'] = float('nan')
-        df['p_low'] = float('nan')
+        df['p_high'] = df['high'].iloc[window:-window].where(
+            (df['high'] == df['high'].rolling(window*2+1, center=True).max())
+        )
+        df['p_low'] = df['low'].iloc[window:-window].where(
+            (df['low'] == df['low'].rolling(window*2+1, center=True).min())
+        )
 
-        for i in range(window, len(df) - window):
-            if df['high'].iloc[i] == df['high'].iloc[i-window : i+window+1].max():
-                df.at[i, 'p_high'] = df['high'].iloc[i]
-            if df['low'].iloc[i] == df['low'].iloc[i-window : i+window+1].min():
-                df.at[i, 'p_low'] = df['low'].iloc[i]
-
-        # เช็ค Divergence
-        ph_df = df.dropna(subset=['p_high']).tail(2)
-        pl_df = df.dropna(subset=['p_low']).tail(2)
+        # [3] คำนวณ Divergence (เทียบ Pivot 2 จุดล่าสุด)
+        ph_idx = df.dropna(subset=['p_high']).index
+        pl_idx = df.dropna(subset=['p_low']).index
+        
         is_bull_div = False
         is_bear_div = False
 
-        if len(ph_df) >= 2:
-            if ph_df['high'].iloc[-1] > ph_df['high'].iloc[-2] and ph_df['rsi'].iloc[-1] < ph_df['rsi'].iloc[-2]:
+        if len(ph_idx) >= 2:
+            # Bearish Div: Price Higher High แต่ RSI Lower High
+            if df['high'].loc[ph_idx[-1]] > df['high'].loc[ph_idx[-2]] and \
+               df['rsi'].loc[ph_idx[-1]] < df['rsi'].loc[ph_idx[-2]]:
                 is_bear_div = True
-        if len(pl_df) >= 2:
-            if pl_df['low'].iloc[-1] < pl_df['low'].iloc[-2] and pl_df['rsi'].iloc[-1] > pl_df['rsi'].iloc[-2]:
+                
+        if len(pl_idx) >= 2:
+            # Bullish Div: Price Lower Low แต่ RSI Higher Low
+            if df['low'].loc[pl_idx[-1]] < df['low'].loc[pl_idx[-2]] and \
+               df['rsi'].loc[pl_idx[-1]] > df['rsi'].loc[pl_idx[-2]]:
                 is_bull_div = True
 
-        # [4] เงื่อนไข LONG/SHORT
+        # [4] เงื่อนไขการส่งสัญญาณ (อิงตาม Pine Script ล่าสุด)
         last = df.iloc[-1]
         prev = df.iloc[-2]
-
-        long_trigger = (prev['k'] < prev['d'] and last['k'] > last['d']) and \
-                       (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and \
-                       (last['rsi'] >= prev['rsi'])
-
-        short_trigger = (prev['k'] > prev['d'] and last['k'] < last['d']) and \
-                        (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and \
-                        (last['rsi'] <= prev['rsi'])
-
-        msg = ""
-        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
         
-        if long_trigger:
-            msg = f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {trend}" + ("\n+ Bull Div" if is_bull_div else "")
-        elif short_trigger:
-            msg = f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {trend}" + ("\n+ Bear Div" if is_bear_div else "")
+        # ค้นหาจุดตัด (Crossover / Crossunder)
+        cross_over = prev['k'] < prev['d'] and last['k'] > last['d']
+        cross_under = prev['k'] > prev['d'] and last['k'] < last['d']
 
-        if msg:
+        long_trigger = cross_over and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
+        short_trigger = cross_under and (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and (last['rsi'] <= prev['rsi'])
+
+        # [5] การแจ้งเตือน
+        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
+        if long_trigger:
+            msg = f"🚀 *[SK22 LONG]*\n*Symbol:* {SYMBOL}\n*Price:* {last['close']}\n*Trend:* {trend}"
+            if is_bull_div: msg += "\n🔥 *+ Bullish Divergence*"
             send_telegram(msg)
-            print(f"Signal Found: {msg}")
+            print("Signal Found: LONG")
+            
+        elif short_trigger:
+            msg = f"🔻 *[SK22 SHORT]*\n*Symbol:* {SYMBOL}\n*Price:* {last['close']}\n*Trend:* {trend}"
+            if is_bear_div: msg += "\n🔥 *+ Bearish Divergence*"
+            send_telegram(msg)
+            print("Signal Found: SHORT")
         else:
-            print(f"Checked {SYMBOL}: No signal. (K: {last['k']:.2f})")
+            print(f"Checked {SYMBOL}: No Signal (K:{last['k']:.2f}, RSI:{last['rsi']:.2f})")
 
     except Exception as e:
         print(f"Error: {e}")

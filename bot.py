@@ -23,18 +23,23 @@ def check_signal():
         bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
         df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
 
-        # Indicators
+        # --- คำนวณตามสูตร Pine Script ---
         df['rsi'] = ta.rsi(df['close'], length=14)
+        
+        # Stoch RSI
         stoch = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
-        df['k'], df['d'] = stoch.iloc[:, 0], stoch.iloc[:, 1]
+        # ดึง Column K และ D โดยใช้ตำแหน่ง (Position) เพื่อป้องกันชื่อ Column ต่างเวอร์ชัน
+        df['k'] = stoch.iloc[:, 0]
+        df['d'] = stoch.iloc[:, 1]
+        
         df['ema200'] = ta.ema(df['close'], length=200)
 
-        # Pivot Points (Swing 5)
-        window = 5
-        df['p_high'] = df['high'].iloc[window:-window].where((df['high'] == df['high'].rolling(window*2+1, center=True).max()))
-        df['p_low'] = df['low'].iloc[window:-window].where((df['low'] == df['low'].rolling(window*2+1, center=True).min()))
+        # Pivot Points (Swing Left/Right 5)
+        w = 5
+        df['p_high'] = df['high'].iloc[w:-w].where((df['high'] == df['high'].rolling(w*2+1, center=True).max()))
+        df['p_low'] = df['low'].iloc[w:-w].where((df['low'] == df['low'].rolling(w*2+1, center=True).min()))
 
-        # Divergence logic (Fixed)
+        # Divergence Detection
         ph = df.dropna(subset=['p_high']).tail(2)
         pl = df.dropna(subset=['p_low']).tail(2)
         is_bull_div, is_bear_div = False, False
@@ -46,20 +51,26 @@ def check_signal():
             if pl['low'].iloc[-1] < pl['low'].iloc[-2] and pl['rsi'].iloc[-1] > pl['rsi'].iloc[-2]:
                 is_bull_div = True
 
+        # Signal Logic
         last, prev = df.iloc[-1], df.iloc[-2]
         cross_over = prev['k'] < prev['d'] and last['k'] > last['d']
         cross_under = prev['k'] > prev['d'] and last['k'] < last['d']
 
-        # Entry Conditions
-        long_trigger = cross_over and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
-        short_trigger = cross_under and (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and (last['rsi'] <= prev['rsi'])
-
-        if long_trigger:
-            send_telegram(f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {'📈 Above EMA200' if last['close'] > last['ema200'] else '📉 Below EMA200'}" + ("\n🔥 + Bull Div" if is_bull_div else ""))
-        elif short_trigger:
-            send_telegram(f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {'📈 Above EMA200' if last['close'] > last['ema200'] else '📉 Below EMA200'}" + ("\n🔥 + Bear Div" if is_bear_div else ""))
+        # Trend Notification
+        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
         
-        print(f"Bot Ran Successfully: K={last['k']:.2f}")
+        # เงื่อนไขการส่ง Alert
+        if cross_over and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi']):
+            msg = f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {trend}"
+            if is_bull_div: msg += "\n🔥 *+ Bull Div*"
+            send_telegram(msg)
+            
+        elif cross_under and (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and (last['rsi'] <= prev['rsi']):
+            msg = f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {trend}"
+            if is_bear_div: msg += "\n🔥 *+ Bear Div*"
+            send_telegram(msg)
+
+        print(f"Check Complete: {SYMBOL} K={last['k']:.2f}")
 
     except Exception as e:
         print(f"Error: {e}")

@@ -6,7 +6,7 @@ import os
 
 # --- คอนฟิก (ไม่ต้องใส่เลขตรงนี้ ให้ไปใส่ใน GitHub Secrets) ---
 SYMBOL = 'BTC/USDT'
-TIMEFRAME = '1h'
+TIMEFRAME = '15m'
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 

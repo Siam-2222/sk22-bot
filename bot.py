@@ -38,7 +38,7 @@ def calculate_indicators(df):
     return df
 
 def check_signal():
-    exchange = ccxt.binance()
+    exchange = ccxt.bybit()
     print(f"--- Bot Starting Scan: {len(SYMBOLS)} Coins ---")
     
     for symbol in SYMBOLS:

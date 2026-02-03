@@ -2,7 +2,8 @@ name: SK22-Auto-Run
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # รันทุก 15 นาที เฉพาะเวลา 07:00 - 24:00 น. (เวลาไทย)
+    - cron: '0,15,30,45 0-16 * * *'
   workflow_dispatch:
 
 jobs:

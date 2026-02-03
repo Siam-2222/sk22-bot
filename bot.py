@@ -1,8 +1,7 @@
-import ccxt
-import pandas as pd
-import pandas_ta as ta
-import requests
-import os
+ccxt
+pandas<2.0.0
+pandas-ta
+requests
 
 # --- คอนฟิก (ไม่ต้องใส่เลขตรงนี้ ให้ไปใส่ใน GitHub Secrets) ---
 SYMBOL = 'BTC/USDT'

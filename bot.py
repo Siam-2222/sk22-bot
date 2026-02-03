@@ -38,12 +38,13 @@ def calculate_indicators(df):
     return df
 
 def check_signal():
-   exchange = ccxt.okx()
+    # เปลี่ยนเป็น OKX เพื่อเลี่ยงการบล็อก IP จาก GitHub
+    exchange = ccxt.okx()
     print(f"--- Bot Starting Scan: {len(SYMBOLS)} Coins ---")
     
     for symbol in SYMBOLS:
         try:
-            # ดึงข้อมูลย้อนหลัง 400 แท่ง
+            # ดึงข้อมูลจาก OKX (Timeframe 15m)
             bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400)
             df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
             df = calculate_indicators(df)
@@ -79,7 +80,7 @@ def check_signal():
                 send_telegram(msg)
 
             print(f"Checked {symbol}: K={last['k']:.2f}, RSI={last['rsi']:.2f}")
-            time.sleep(1) # พัก 1 วินาทีป้องกันโดนแบน IP
+            time.sleep(1) 
 
         except Exception as e:
             print(f"Error checking {symbol}: {e}")

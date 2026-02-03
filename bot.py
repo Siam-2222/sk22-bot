@@ -23,7 +23,7 @@ def send_telegram(msg):
 
 def check_signal():
     try:
-        # ใช้ Binance (Public) ไม่ต้องใส่ API Key
+        # ใช้ Binance (Public)
         exchange = ccxt.binance()
         
         # ดึงข้อมูล 500 แท่ง
@@ -34,7 +34,7 @@ def check_signal():
         df['rsi'] = ta.rsi(df['close'], length=14)
         stoch_rsi = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
         
-        # ป้องกันกรณีชื่อ Column ไม่ตรง
+        # ป้องกันกรณีชื่อ Column ไม่ตรง ให้ดึงตามตำแหน่ง
         df['k'] = stoch_rsi.iloc[:, 0]
         df['d'] = stoch_rsi.iloc[:, 1]
         df['ema200'] = ta.ema(df['close'], length=200)

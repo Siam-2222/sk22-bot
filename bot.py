@@ -1,125 +1,99 @@
 import ccxt
 import pandas as pd
+import pandas_ta as ta
 import requests
 import os
-import numpy as np
 
-# --- CONFIG ---
+# --- คอนฟิก (ดึงค่าจาก GitHub Secrets) ---
 SYMBOL = 'BTC/USDT'
 TIMEFRAME = '15m'
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 
-
-# ---------- Indicator Functions ----------
-def ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
-
-def rsi(series, length=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(length).mean()
-    avg_loss = loss.rolling(length).mean()
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def stoch_rsi(close, length=14, smooth_k=3, smooth_d=3):
-    rsi_val = rsi(close, length)
-    min_rsi = rsi_val.rolling(length).min()
-    max_rsi = rsi_val.rolling(length).max()
-
-    stoch = (rsi_val - min_rsi) / (max_rsi - min_rsi) * 100
-    k = stoch.rolling(smooth_k).mean()
-    d = k.rolling(smooth_d).mean()
-    return k, d
-
-
-# ---------- Telegram ----------
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Missing Telegram config")
         return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    payload = {'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}
     requests.post(url, data=payload)
 
-
-# ---------- Signal Logic ----------
 def check_signal():
-    exchange = ccxt.binance()
-    bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
+    try:
+        exchange = ccxt.binance()
+        bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
+        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
 
-    df = pd.DataFrame(
-        bars, columns=["time", "open", "high", "low", "close", "vol"]
-    )
+        # [1] คำนวณ RSI / Stoch RSI / EMA
+        df['rsi'] = ta.rsi(df['close'], length=14)
+        stoch = ta.stochrsi(df['close'], length=14, rsi_length=14, k=3, d=3)
+        df['k'] = stoch.iloc[:, 0]
+        df['d'] = stoch.iloc[:, 1]
+        df['ema200'] = ta.ema(df['close'], length=200)
 
-    # Indicators
-    df["ema200"] = ema(df["close"], 200)
-    df["rsi"] = rsi(df["close"], 14)
-    df["k"], df["d"] = stoch_rsi(df["close"])
+        # [2] ระบบ Pivot High/Low (Swing Left 5, Right 5)
+        # หาจุดสูงสุด/ต่ำสุดในระยะ 11 แท่ง (มองย้อนหลังและมองข้ามไปข้างหน้า)
+        window = 5
+        df['p_high'] = na = float('nan')
+        df['p_low'] = na
 
-    # Pivot High / Low
-    df["p_high"] = df["high"][
-        df["high"] == df["high"].rolling(11, center=True).max()
-    ]
-    df["p_low"] = df["low"][
-        df["low"] == df["low"].rolling(11, center=True).min()
-    ]
+        for i in range(window, len(df) - window):
+            # Pivot High
+            if df['high'].iloc[i] == df['high'].iloc[i-window : i+window+1].max():
+                df.at[i, 'p_high'] = df['high'].iloc[i]
+            # Pivot Low
+            if df['low'].iloc[i] == df['low'].iloc[i-window : i+window+1].min():
+                df.at[i, 'p_low'] = df['low'].iloc[i]
 
-    ph = df.dropna(subset=["p_high"]).tail(2)
-    pl = df.dropna(subset=["p_low"]).tail(2)
+        # เก็บค่า RSI และ Price ณ จุด Pivot ล่าสุด 2 จุด
+        ph_df = df.dropna(subset=['p_high'])
+        pl_df = df.dropna(subset=['p_low'])
 
-    is_bear_div = (
-        len(ph) == 2
-        and ph["high"].iloc[-1] > ph["high"].iloc[-2]
-        and df["rsi"].loc[ph.index[-1]] < df["rsi"].loc[ph.index[-2]]
-    )
+        is_bull_div = False
+        is_bear_div = False
 
-    is_bull_div = (
-        len(pl) == 2
-        and pl["low"].iloc[-1] < pl["low"].iloc[-2]
-        and df["rsi"].loc[pl.index[-1]] > df["rsi"].loc[pl.index[-2]]
-    )
+        if len(ph_df) >= 2:
+            # Bear Div: ราคาสูงขึ้น แต่ RSI ต่ำลง
+            if ph_df['high'].iloc[-1] > ph_df['high'].iloc[-2] and \
+               ph_df['rsi'].iloc[-1] < ph_df['rsi'].iloc[-2]:
+                is_bear_div = True
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+        if len(pl_df) >= 2:
+            # Bull Div: ราคาต่ำลง แต่ RSI สูงขึ้น
+            if pl_df['low'].iloc[-1] < pl_df['low'].iloc[-2] and \
+               pl_df['rsi'].iloc[-1] > pl_df['rsi'].iloc[-2]:
+                is_bull_div = True
 
-    long_trigger = (
-        prev["k"] < prev["d"]
-        and last["k"] > last["d"]
-        and (last["k"] < 25 or (is_bull_div and last["k"] < 50))
-        and last["rsi"] >= prev["rsi"]
-    )
+        # [4] เงื่อนไข LONG/SHORT (ถอดมาจาก Pine Script)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-    short_trigger = (
-        prev["k"] > prev["d"]
-        and last["k"] < last["d"]
-        and (last["k"] > 75 or (is_bear_div and last["k"] > 50))
-        and last["rsi"] <= prev["rsi"]
-    )
+        # Stochastic RSI Crossover
+        crossover = prev['k'] < prev['d'] and last['k'] > last['d']
+        # Stochastic RSI Crossunder
+        crossunder = prev['k'] > prev['d'] and last['k'] < last['d']
 
-    trend = "📈 Above EMA200" if last["close"] > last["ema200"] else "📉 Below EMA200"
+        long_trigger = crossover and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and last['rsi'] >= prev['rsi']
+        short_trigger = crossunder and (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and last['rsi'] <= prev['rsi']
 
-    if long_trigger:
-        div = " + Bull Div" if is_bull_div else ""
-        send_telegram(
-            f"🚀 *[SK22 LONG]*\nPrice: {last['close']}\nTrend: {trend}{div}"
-        )
-        print("LONG Signal Sent")
+        # [5] ส่งแจ้งเตือน
+        msg = ""
+        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
+        
+        if long_trigger:
+            div_text = " + Bull Div" if is_bull_div else ""
+            msg = f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {trend}{div_text}"
+        elif short_trigger:
+            div_text = " + Bear Div" if is_bear_div else ""
+            msg = f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {trend}{div_text}"
 
-    elif short_trigger:
-        div = " + Bear Div" if is_bear_div else ""
-        send_telegram(
-            f"🔻 *[SK22 SHORT]*\nPrice: {last['close']}\nTrend: {trend}{div}"
-        )
-        print("SHORT Signal Sent")
-    else:
-        print(f"No Signal | K={last['k']:.2f} RSI={last['rsi']:.2f}")
+        if msg:
+            send_telegram(msg)
+            print(f"Signal Found: {msg}")
+        else:
+            print(f"Checked {SYMBOL}: No signal. (K: {last['k']:.2f}, RSI: {last['rsi']:.2f})")
 
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     check_signal()

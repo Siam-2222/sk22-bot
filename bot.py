@@ -34,7 +34,7 @@ def check_signal():
         df['p_high'] = df['high'].iloc[window:-window].where((df['high'] == df['high'].rolling(window*2+1, center=True).max()))
         df['p_low'] = df['low'].iloc[window:-window].where((df['low'] == df['low'].rolling(window*2+1, center=True).min()))
 
-        # Divergence Logic
+        # Divergence logic (Fixed)
         ph = df.dropna(subset=['p_high']).tail(2)
         pl = df.dropna(subset=['p_low']).tail(2)
         is_bull_div, is_bear_div = False, False
@@ -46,21 +46,20 @@ def check_signal():
             if pl['low'].iloc[-1] < pl['low'].iloc[-2] and pl['rsi'].iloc[-1] > pl['rsi'].iloc[-2]:
                 is_bull_div = True
 
-        # Signal Logic
         last, prev = df.iloc[-1], df.iloc[-2]
         cross_over = prev['k'] < prev['d'] and last['k'] > last['d']
         cross_under = prev['k'] > prev['d'] and last['k'] < last['d']
 
+        # Entry Conditions
         long_trigger = cross_over and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
         short_trigger = cross_under and (last['k'] > 75 or (is_bear_div and last['k'] < 50)) and (last['rsi'] <= prev['rsi'])
 
-        trend = "📈 Above EMA200" if last['close'] > last['ema200'] else "📉 Below EMA200"
         if long_trigger:
-            send_telegram(f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {trend}" + ("\n🔥 + Bull Div" if is_bull_div else ""))
+            send_telegram(f"🚀 *[SK22 LONG]*\n*Price:* {last['close']}\n*Trend:* {'📈 Above EMA200' if last['close'] > last['ema200'] else '📉 Below EMA200'}" + ("\n🔥 + Bull Div" if is_bull_div else ""))
         elif short_trigger:
-            send_telegram(f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {trend}" + ("\n🔥 + Bear Div" if is_bear_div else ""))
+            send_telegram(f"🔻 *[SK22 SHORT]*\n*Price:* {last['close']}\n*Trend:* {'📈 Above EMA200' if last['close'] > last['ema200'] else '📉 Below EMA200'}" + ("\n🔥 + Bear Div" if is_bear_div else ""))
         
-        print(f"Checked {SYMBOL} - K: {last['k']:.2f}")
+        print(f"Bot Ran Successfully: K={last['k']:.2f}")
 
     except Exception as e:
         print(f"Error: {e}")

@@ -1,0 +1,28 @@
+name: SK22-Auto-Run
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # สั่งให้บอทตื่นมาเช็คทุก 15 นาที
+  workflow_dispatch:        # ช่วยให้เรามีปุ่มกดมือ (Manual) เพื่อทดสอบได้
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install ccxt pandas pandas_ta requests
+
+      - name: Run SK22 Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot.py

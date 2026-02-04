@@ -1,102 +1,94 @@
 import os, ccxt, requests
 import pandas as pd
 import numpy as np
+import datetime
+import pytz
 
-# [1] รายชื่อเหรียญที่พี่วิทยาเฝ้าดู
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'
+SWING_LOOKBACK = 5 
 
-# [2] ดึงรหัสลับจาก GitHub Secrets (7 ตัวที่พี่ใส่ไว้)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 PO_USER = os.getenv('PUSHOVER_USER_KEY')
 PO_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
-# API OKX ส่วนตัว
 OKX_KEY = os.getenv('OKX_API_KEY')
 OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
 
+def get_thai_time():
+    tz_thai = pytz.timezone('Asia/Bangkok')
+    return datetime.datetime.now(tz_thai).strftime('%H:%M:%S')
+
 def send_all_alerts(msg):
-    # 1. ส่ง Telegram
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
             url_tg = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
             requests.post(url_tg, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=10)
         except: pass
-
-    # 2. ส่ง Pushover ไซเรน
     if PO_USER and PO_TOKEN:
         try:
             url_po = "https://api.pushover.net/1/messages.json"
-            data = {
-                "token": PO_TOKEN, "user": PO_USER, "message": msg,
-                "title": "🚨 SK22 REAL-TIME!", "sound": "siren",
-                "priority": 2, "retry": 30, "expire": 3600
-            }
+            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 SK22 DYNAMIC!", "sound": "siren", "priority": 2, "retry": 30, "expire": 3600}
             requests.post(url_po, data=data, timeout=10)
         except: pass
 
-def calculate_indicators(df):
-    # สูตร Stochastic RSI ตามแบบฉบับ SK 22
+def calculate_dynamic_sk22(df):
     delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss.replace(0, 1)
-    df['rsi'] = 100 - (100 / (1 + rs))
-    
-    rsi_min = df['rsi'].rolling(window=14).min()
-    rsi_max = df['rsi'].rolling(window=14).max()
-    
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + (gain / loss.replace(0, 1))))
+    rsi_min, rsi_max = df['rsi'].rolling(14).min(), df['rsi'].rolling(14).max()
     df['k'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min).replace(0, 1)
-    df['k'] = df['k'].rolling(window=3).mean()
-    df['d'] = df['k'].rolling(window=3).mean()
-    
-    # EMA 200 ดูเทรนหลัก
+    df['k'] = df['k'].rolling(3).mean()
+    df['d'] = df['k'].rolling(3).mean()
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-    return df
+
+    def get_pivots(data, is_high):
+        pivots = []
+        for i in range(SWING_LOOKBACK, len(data) - SWING_LOOKBACK):
+            part = data[i-SWING_LOOKBACK : i+SWING_LOOKBACK+1]
+            if is_high and data[i] == max(part): pivots.append((i, data[i]))
+            elif not is_high and data[i] == min(part): pivots.append((i, data[i]))
+        return pivots
+
+    ph = get_pivots(df['high'].values, True)
+    pl = get_pivots(df['low'].values, False)
+    is_bear_div, is_bull_div = False, False
+    if len(ph) >= 2:
+        if ph[-1][1] > ph[-2][1] and df['rsi'].iloc[ph[-1][0]] < df['rsi'].iloc[ph[-2][0]]: is_bear_div = True
+    if len(pl) >= 2:
+        if pl[-1][1] < pl[-2][1] and df['rsi'].iloc[pl[-1][0]] > df['rsi'].iloc[pl[-2][0]]: is_bull_div = True
+    return df, is_bear_div, is_bull_div
 
 def check_signal():
-    # เชื่อมต่อ API OKX แบบระบุตัวตน (Real-time)
-    exchange = ccxt.okx({
-        'apiKey': OKX_KEY,
-        'secret': OKX_SECRET,
-        'password': OKX_PW,
-        'enableRateLimit': True
-    })
-    
-    print(f"--- [SK22] Real-time Scanning with OKX API ---")
-    
+    exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW, 'enableRateLimit': True})
+    now_thai = get_thai_time()
     for symbol in SYMBOLS:
         try:
-            # 1. ดึงแท่งเทียนย้อนหลัง
-            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
+            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-            
-            # 2. 🔥 ไม้ตาย: ดึงราคาปัจจุบัน ณ วินาทีนี้มาใส่ในสูตร
             ticker = exchange.fetch_ticker(symbol)
-            current_price = ticker['last']
-            df.at[df.index[-1], 'close'] = current_price 
-            
-            df = calculate_indicators(df)
+            curr_price = ticker['last']
+            df.at[df.index[-1], 'close'] = curr_price 
+            df, is_bear_div, is_bull_div = calculate_dynamic_sk22(df)
             last, prev = df.iloc[-1], df.iloc[-2]
+            is_uptrend = curr_price > last['ema200']
             
-            # เงื่อนไขแจ้งเตือน SK22 (K ตัด D และอยู่ในโซน 25/75)
-            long_trigger = (prev['k'] < prev['d'] and last['k'] > last['d']) and (last['k'] < 25)
-            short_trigger = (prev['k'] > prev['d'] and last['k'] < last['d']) and (last['k'] > 75)
-
-            trend_status = "Above EMA200" if current_price > last['ema200'] else "Below EMA200"
+            long_trigger = (prev['k'] < prev['d'] and last['k'] > last['d']) and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
+            short_trigger = (prev['k'] > prev['d'] and last['k'] < last['d']) and (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and (last['rsi'] <= prev['rsi'])
 
             if long_trigger:
-                msg = f"🚀 *[LONG]* {symbol}\n💰 Price: {current_price}\n📊 K: {last['k']:.2f}\n📈 Trend: {trend_status}"
+                sl = round(last['low'] * 0.999, 4)
+                grade = "🏆 [PREMIUM]" if is_uptrend else "⚠️ [NORMAL]"
+                msg = f"{grade} - LONG {symbol} {'+ Bull Div' if is_bull_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if is_uptrend else '❗ Counter-Trend'}"
                 send_all_alerts(msg)
             elif short_trigger:
-                msg = f"🔻 *[SHORT]* {symbol}\n💰 Price: {current_price}\n📊 K: {last['k']:.2f}\n📉 Trend: {trend_status}"
+                sl = round(last['high'] * 1.001, 4)
+                grade = "🏆 [PREMIUM]" if not is_uptrend else "⚠️ [NORMAL]"
+                msg = f"{grade} - SHORT {symbol} {'+ Bear Div' if is_bear_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if not is_uptrend else '❗ Counter-Trend'}"
                 send_all_alerts(msg)
-            
-            print(f"{symbol}: {current_price} | K={last['k']:.2f} D={last['d']:.2f} ({trend_status})")
-            
-        except Exception as e:
-            print(f"Error {symbol}: {e}")
+        except: pass
 
 if __name__ == "__main__":
     check_signal()

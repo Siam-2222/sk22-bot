@@ -64,8 +64,13 @@ def calculate_dynamic_sk22(df):
 def check_signal():
     exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW, 'enableRateLimit': True})
     now_thai = get_thai_time()
+    print(f"--- [SK22 START SCAN: {now_thai}] ---") # บอกเวลาเริ่มสแกน
+    
     for symbol in SYMBOLS:
         try:
+            # รายงานว่ากำลังตรวจเหรียญไหน
+            print(f"🔍 Checking {symbol}...") 
+            
             bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
             ticker = exchange.fetch_ticker(symbol)
@@ -75,6 +80,9 @@ def check_signal():
             last, prev = df.iloc[-1], df.iloc[-2]
             is_uptrend = curr_price > last['ema200']
             
+            # โชว์ค่า K/D ให้พี่ดูใน Log ด้วย
+            print(f"   > Price: {curr_price} | K: {last['k']:.2f} | D: {last['d']:.2f}")
+
             long_trigger = (prev['k'] < prev['d'] and last['k'] > last['d']) and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
             short_trigger = (prev['k'] > prev['d'] and last['k'] < last['d']) and (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and (last['rsi'] <= prev['rsi'])
 
@@ -83,12 +91,20 @@ def check_signal():
                 grade = "🏆 [PREMIUM]" if is_uptrend else "⚠️ [NORMAL]"
                 msg = f"{grade} - LONG {symbol} {'+ Bull Div' if is_bull_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if is_uptrend else '❗ Counter-Trend'}"
                 send_all_alerts(msg)
+                print(f"   ✅ SIGNAL FOUND: LONG {symbol}")
             elif short_trigger:
                 sl = round(last['high'] * 1.001, 4)
                 grade = "🏆 [PREMIUM]" if not is_uptrend else "⚠️ [NORMAL]"
                 msg = f"{grade} - SHORT {symbol} {'+ Bear Div' if is_bear_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if not is_uptrend else '❗ Counter-Trend'}"
                 send_all_alerts(msg)
-        except: pass
+                print(f"   ✅ SIGNAL FOUND: SHORT {symbol}")
+            else:
+                print(f"   ❌ No Signal for {symbol}")
+
+        except Exception as e: 
+            print(f"   ⚠️ Error scanning {symbol}: {e}")
+
+    print(f"--- [SCAN FINISHED] ---")
 
 if __name__ == "__main__":
     check_signal()

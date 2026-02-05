@@ -6,9 +6,9 @@ import pytz
 
 # --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นขยาย Window รอบค่ำ) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
-TIMEFRAME = '15m'      
-SWING_LOOKBACK = 5    
-CHOCH_WINDOW = 20      # ขยับจาก 15 เป็น 20 เพื่อให้ดักสัญญาณได้กว้างขึ้น
+TIMEFRAME = '15m'       
+SWING_LOOKBACK = 5     
+CHOCH_WINDOW = 20      
 
 # --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -37,7 +37,7 @@ def send_all_alerts(msg):
         except: pass
 
 def calculate_sk22_logic(df):
-    # [1] RSI & Stochastic RSI (Wilder's Smoothing)
+    # [1] RSI & Stochastic RSI
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
@@ -103,14 +103,18 @@ def check_signal():
                            (last['rsi'] <= prev['rsi']) and \
                            (bars_since_down <= CHOCH_WINDOW)
 
+            # --- ส่วนที่เพิ่มใหม่: คำนวณราคา SL (อิงจาก 2 แท่งล่าสุด) ---
+            sl_long = df['low'].tail(2).min()
+            sl_short = df['high'].tail(2).max()
+
             print(f"| K: {last['k']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
 
             if long_trigger:
-                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
+                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_long}*\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             elif short_trigger:
-                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
+                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_short}*\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             else:

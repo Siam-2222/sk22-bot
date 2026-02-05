@@ -29,37 +29,35 @@ def send_all_alerts(msg):
     if PO_USER and PO_TOKEN:
         try:
             url_po = "https://api.pushover.net/1/messages.json"
-            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 SK22 DYNAMIC!", "sound": "siren", "priority": 2, "retry": 30, "expire": 3600}
+            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 SK22 ALERT!", "sound": "siren", "priority": 1}
             requests.post(url_po, data=data, timeout=10)
         except: pass
 
-def calculate_dynamic_sk22(df):
-    # --- สูตร Sto RSI แบบเป๊ะตาม TradingView ---
-    # 1. RSI
+def calculate_sk22_logic(df):
+    # --- 1. RSI (แบบ Wilder's Smoothing / RMA เป๊ะๆ) ---
     delta = df['close'].diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    # ใช้ EMA แทน SMA เพื่อความไว (ตรงตามสูตร RSI มาตรฐาน)
-    ema_up = up.ewm(com=13, adjust=False).mean()
-    ema_down = down.ewm(com=13, adjust=False).mean()
-    rs = ema_up / ema_down.replace(0, 1)
+    gain = (delta.where(delta > 0, 0))
+    loss = (-delta.where(delta < 0, 0))
+    alpha = 1 / 14
+    avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
     df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # 2. Stochastic RSI
+
+    # --- 2. Stochastic RSI ---
     stoch_rsi_len = 14
     rsi_min = df['rsi'].rolling(window=stoch_rsi_len).min()
     rsi_max = df['rsi'].rolling(window=stoch_rsi_len).max()
-    # ป้องกันการหารด้วย 0
-    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min).replace(0, 1)
-    
-    # 3. K และ D (ใช้ค่าเฉลี่ยแบบไว)
+    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min).replace(0, 0.00001)
+
+    # --- 3. K และ D (ใช้ SMA 3 ตาม Pine Script) ---
     df['k'] = df['stoch_rsi'].rolling(window=3).mean()
     df['d'] = df['k'].rolling(window=3).mean()
     
-    # --- EMA 200 ---
+    # --- 4. EMA 200 ---
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-    # --- ระบบ Pivot (Divergence) ---
+    # --- 5. Divergence Logic (อิงจาก Pivots) ---
     def get_pivots(data, is_high):
         pivots = []
         for i in range(SWING_LOOKBACK, len(data) - SWING_LOOKBACK):
@@ -75,50 +73,54 @@ def calculate_dynamic_sk22(df):
         if ph[-1][1] > ph[-2][1] and df['rsi'].iloc[ph[-1][0]] < df['rsi'].iloc[ph[-2][0]]: is_bear_div = True
     if len(pl) >= 2:
         if pl[-1][1] < pl[-2][1] and df['rsi'].iloc[pl[-1][0]] > df['rsi'].iloc[pl[-2][0]]: is_bull_div = True
+    
     return df, is_bear_div, is_bull_div
 
 def check_signal():
-    exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW, 'enableRateLimit': True})
+    exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW})
     now_thai = get_thai_time()
-    print(f"--- [SK22 START SCAN: {now_thai}] ---")
+    print(f"--- [SK22 SCAN: {now_thai}] ---")
     
     for symbol in SYMBOLS:
         try:
-            print(f"🔍 Checking {symbol}...")
-            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
+            # ดึงข้อมูลย้อนหลัง
+            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=250)
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
+            
+            # 🔥 ดึงราคา Real-time มาใส่แทนที่ราคา Close ล่าสุดเพื่อให้แจ้งเตือนไว
             ticker = exchange.fetch_ticker(symbol)
             curr_price = ticker['last']
             df.at[df.index[-1], 'close'] = curr_price 
             
-            df, is_bear_div, is_bull_div = calculate_dynamic_sk22(df)
+            df, is_bear_div, is_bull_div = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
-            is_uptrend = curr_price > last['ema200']
-            
-            # แสดงค่า K/D ล่าสุดใน Log
-            print(f"   > Price: {curr_price} | K: {last['k']:.2f} | D: {last['d']:.2f}")
 
-            # เงื่อนไขการตัดกัน (Crossover/Crossunder)
-            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and (last['rsi'] >= prev['rsi'])
-            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and (last['rsi'] <= prev['rsi'])
+            # --- เงื่อนไขตามโค้ด Pine Script ของพี่เป๊ะๆ ---
+            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
+                          (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and \
+                          (last['rsi'] >= prev['rsi'])
+
+            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
+                           (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and \
+                           (last['rsi'] <= prev['rsi'])
+
+            print(f"🔍 {symbol} | Price: {curr_price} | K: {last['k']:.2f} | D: {last['d']:.2f}")
 
             if long_trigger:
                 sl = round(last['low'] * 0.999, 4)
-                grade = "🏆 [PREMIUM]" if is_uptrend else "⚠️ [NORMAL]"
-                msg = f"{grade} - LONG {symbol} {'+ Bull Div' if is_bull_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if is_uptrend else '❗ Counter-Trend'}"
+                type = "LONG 🚀"
+                msg = f"{type} {symbol}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n🕒 TIME: {now_thai}"
                 send_all_alerts(msg)
-                print(f"   ✅ SIGNAL FOUND: LONG")
+                print(f"   ✅ SENT: {type}")
             elif short_trigger:
                 sl = round(last['high'] * 1.001, 4)
-                grade = "🏆 [PREMIUM]" if not is_uptrend else "⚠️ [NORMAL]"
-                msg = f"{grade} - SHORT {symbol} {'+ Bear Div' if is_bear_div else ''}\n🕒 TIME: {now_thai}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n{'⭐ Confidence: 90%' if not is_uptrend else '❗ Counter-Trend'}"
+                type = "SHORT 🔻"
+                msg = f"{type} {symbol}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n🕒 TIME: {now_thai}"
                 send_all_alerts(msg)
-                print(f"   ✅ SIGNAL FOUND: SHORT")
-            else:
-                print(f"   ❌ No Signal")
+                print(f"   ✅ SENT: {type}")
 
-        except Exception as e: print(f"   ⚠️ Error: {e}")
-    print(f"--- [SCAN FINISHED] ---")
+        except Exception as e:
+            print(f"   ⚠️ Error: {e}")
 
 if __name__ == "__main__":
     check_signal()

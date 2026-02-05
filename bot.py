@@ -4,12 +4,13 @@ import numpy as np
 import datetime
 import pytz
 
-# --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นอัปเกรด CHoCH) ---
+# --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นทดสอบระบบแจ้งเตือนด่วน) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
-TIMEFRAME = '15m'
-SWING_LOOKBACK = 5   # เท่ากับ swingLeft/Right ในสคริปต์พี่
-CHOCH_WINDOW = 15    # เงื่อนไขต้องเกิดสัญญาณภายใน 15 แท่ง
+TIMEFRAME = '5m'      # ปรับจาก 15m เป็น 5m เพื่อให้สัญญาณมาไวขึ้น
+SWING_LOOKBACK = 5    
+CHOCH_WINDOW = 30     # ขยายจาก 15 เป็น 30 เพื่อให้แจ้งเตือนง่ายขึ้นในการทดสอบ
 
+# --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 PO_USER = os.getenv('PUSHOVER_USER_KEY')
@@ -31,7 +32,7 @@ def send_all_alerts(msg):
     if PO_USER and PO_TOKEN:
         try:
             url_po = "https://api.pushover.net/1/messages.json"
-            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 TRAGOONAEK NO.1", "sound": "siren", "priority": 1}
+            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 TRAGOONAEK ALERT!", "sound": "siren", "priority": 1}
             requests.post(url_po, data=data, timeout=15)
         except: pass
 
@@ -40,8 +41,9 @@ def calculate_sk22_logic(df):
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
-    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    alpha = 1 / 14
+    avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, 0.00001)
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -52,16 +54,11 @@ def calculate_sk22_logic(df):
     df['d'] = df['k'].rolling(window=3).mean()
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     
-    # [2] ระบบหาระยะ CHoCH (ไส้ในที่ถอดมา)
-    # หาจุด Pivot High / Low
+    # [2] ระบบหาระยะ CHoCH
     df['is_ph'] = df['high'][(df['high'].shift(SWING_LOOKBACK) < df['high']) & (df['high'].shift(-SWING_LOOKBACK) < df['high'])]
     df['is_pl'] = df['low'][(df['low'].shift(SWING_LOOKBACK) > df['low']) & (df['low'].shift(-SWING_LOOKBACK) > df['low'])]
-    
-    # เก็บค่า Pivot ล่าสุดเพื่อเช็กการทะลุ
     df['last_ph'] = df['is_ph'].ffill()
     df['last_pl'] = df['is_pl'].ffill()
-    
-    # เช็กการเกิด CHoCH
     df['is_choch_up'] = (df['close'] > df['last_ph'].shift(1))
     df['is_choch_down'] = (df['close'] < df['last_pl'].shift(1))
     
@@ -74,7 +71,7 @@ def calculate_sk22_logic(df):
     bars_since_up = bars_since(df['is_choch_up'])
     bars_since_down = bars_since(df['is_choch_down'])
     
-    # [4] Divergence แบบยืดหยุ่น
+    # [4] Divergence (เช็คย้อนหลัง 10 แท่ง)
     df['bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
     df['bear_div'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
     
@@ -96,7 +93,7 @@ def check_signal():
             df, bars_since_up, bars_since_down = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # --- เงื่อนไขพระเอก: ต้องเกิดภายใน 15 แท่งหลัง CHoCH ---
+            # เงื่อนไข Trigger
             long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
                           (last['k'] < 25 or last['bull_div']) and \
                           (last['rsi'] >= prev['rsi']) and \
@@ -107,16 +104,17 @@ def check_signal():
                            (last['rsi'] <= prev['rsi']) and \
                            (bars_since_down <= CHOCH_WINDOW)
 
-            print(f"| K: {last['k']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
+            # พ่นค่า K และ RSI ออกมาดูหน้างาน
+            print(f"| K: {last['k']:.2f} | RSI: {last['rsi']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
 
             if long_trigger:
-                msg = f"🚀 *[LONG {symbol}]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
+                msg = f"🚀 *[LONG {symbol} 5m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
                 send_all_alerts(msg)
-                print("✅ [SIGNAL!]")
+                print("✅ [SIGNAL! SENT]")
             elif short_trigger:
-                msg = f"🔻 *[SHORT {symbol}]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
+                msg = f"🔻 *[SHORT {symbol} 5m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
                 send_all_alerts(msg)
-                print("✅ [SIGNAL!]")
+                print("✅ [SIGNAL! SENT]")
             else:
                 print("❌ No fresh signal")
 

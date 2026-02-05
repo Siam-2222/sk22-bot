@@ -1,13 +1,18 @@
-import os, ccxt, requests
+import os
+import ccxt
+import requests
 import pandas as pd
 import numpy as np
 import datetime
 import pytz
 
+# --- การตั้งค่าบอท ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'
 SWING_LOOKBACK = 5 
+DATA_LIMIT = 500  # ปรับเป็น 500 เพื่อความแม่นยำของ EMA200
 
+# --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 PO_USER = os.getenv('PUSHOVER_USER_KEY')
@@ -21,11 +26,14 @@ def get_thai_time():
     return datetime.datetime.now(tz_thai).strftime('%H:%M:%S')
 
 def send_all_alerts(msg):
+    # ส่งเข้า Telegram
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
             url_tg = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
             requests.post(url_tg, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
         except: pass
+    
+    # ส่งเข้า Pushover
     if PO_USER and PO_TOKEN:
         try:
             url_po = "https://api.pushover.net/1/messages.json"
@@ -66,6 +74,7 @@ def calculate_sk22_logic(df):
     ph = get_pivots(df['high'].values, True)
     pl = get_pivots(df['low'].values, False)
     is_bear_div, is_bull_div = False, False
+    
     if len(ph) >= 2:
         if ph[-1][1] > ph[-2][1] and df['rsi'].iloc[ph[-1][0]] < df['rsi'].iloc[ph[-2][0]]: is_bear_div = True
     if len(pl) >= 2:
@@ -74,12 +83,10 @@ def calculate_sk22_logic(df):
     return df, is_bear_div, is_bull_div
 
 def check_signal():
-    # เพิ่ม timeout และระบบดัก Error กระดาน
     exchange = ccxt.okx({
         'apiKey': OKX_KEY, 
         'secret': OKX_SECRET, 
         'password': OKX_PW,
-        'timeout': 15000,
         'enableRateLimit': True
     })
     
@@ -89,15 +96,12 @@ def check_signal():
     for symbol in SYMBOLS:
         try:
             print(f"🔍 Checking {symbol}...", end=" ", flush=True)
-            # ดึงข้อมูลย้อนหลัง
-            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
-            if not bars:
-                print("❌ No data")
-                continue
+            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=DATA_LIMIT)
+            if not bars: continue
                 
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
             
-            # ดึงราคาปัจจุบัน
+            # อัปเดตราคาล่าสุด
             ticker = exchange.fetch_ticker(symbol)
             curr_price = ticker['last']
             df.at[df.index[-1], 'close'] = curr_price 
@@ -105,6 +109,7 @@ def check_signal():
             df, is_bear_div, is_bull_div = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
+            # ตรรกะการเข้าเทรด SK22
             long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
                           (last['k'] < 25 or (is_bull_div and last['k'] < 50)) and \
                           (last['rsi'] >= prev['rsi'])
@@ -113,24 +118,24 @@ def check_signal():
                            (last['k'] > 75 or (is_bear_div and last['k'] > 50)) and \
                            (last['rsi'] <= prev['rsi'])
 
-            print(f"Price: {curr_price} | K: {last['k']:.2f} | D: {last['d']:.2f}")
-
             if long_trigger:
                 sl = round(last['low'] * 0.999, 4)
                 msg = f"🚀 LONG {symbol}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n🕒 TIME: {now_thai}"
+                if is_bull_div: msg += "\n🔥 BULL DIV CONFIRMED!"
                 send_all_alerts(msg)
-                print(f"   ✅ SIGNAL FOUND: LONG")
+                print("✅ SIGNAL FOUND")
             elif short_trigger:
                 sl = round(last['high'] * 1.001, 4)
                 msg = f"🔻 SHORT {symbol}\n💰 ENTRY: {curr_price}\n🛡️ SL: {sl}\n🕒 TIME: {now_thai}"
+                if is_bear_div: msg += "\n🔥 BEAR DIV CONFIRMED!"
                 send_all_alerts(msg)
-                print(f"   ✅ SIGNAL FOUND: SHORT")
+                print("✅ SIGNAL FOUND")
+            else:
+                print("No signal")
 
         except Exception as e:
             print(f"⚠️ Skip: {e}")
             continue
-
-    print(f"--- [SCAN FINISHED] ---")
 
 if __name__ == "__main__":
     check_signal()

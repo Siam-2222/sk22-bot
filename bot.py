@@ -4,11 +4,11 @@ import numpy as np
 import datetime
 import pytz
 
-# --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นทดสอบระบบแจ้งเตือนด่วน) ---
+# --- การตั้งค่าบอท TRAGOONAEK NO.1 (Back to 15m) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
-TIMEFRAME = '5m'      # ปรับจาก 15m เป็น 5m เพื่อให้สัญญาณมาไวขึ้น
+TIMEFRAME = '15m'      # กลับมาใช้ 15 นาทีตามเดิม
 SWING_LOOKBACK = 5    
-CHOCH_WINDOW = 30     # ขยายจาก 15 เป็น 30 เพื่อให้แจ้งเตือนง่ายขึ้นในการทดสอบ
+CHOCH_WINDOW = 15      # กลับมาใช้ 15 แท่งเพื่อความคม
 
 # --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -71,7 +71,7 @@ def calculate_sk22_logic(df):
     bars_since_up = bars_since(df['is_choch_up'])
     bars_since_down = bars_since(df['is_choch_down'])
     
-    # [4] Divergence (เช็คย้อนหลัง 10 แท่ง)
+    # [4] Divergence
     df['bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
     df['bear_div'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
     
@@ -93,7 +93,7 @@ def check_signal():
             df, bars_since_up, bars_since_down = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # เงื่อนไข Trigger
+            # เงื่อนไข Trigger ตาม TRAGOONAEK NO. 1
             long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
                           (last['k'] < 25 or last['bull_div']) and \
                           (last['rsi'] >= prev['rsi']) and \
@@ -104,17 +104,16 @@ def check_signal():
                            (last['rsi'] <= prev['rsi']) and \
                            (bars_since_down <= CHOCH_WINDOW)
 
-            # พ่นค่า K และ RSI ออกมาดูหน้างาน
-            print(f"| K: {last['k']:.2f} | RSI: {last['rsi']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
+            print(f"| K: {last['k']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
 
             if long_trigger:
-                msg = f"🚀 *[LONG {symbol} 5m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
+                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
                 send_all_alerts(msg)
-                print("✅ [SIGNAL! SENT]")
+                print("✅ [SIGNAL!]")
             elif short_trigger:
-                msg = f"🔻 *[SHORT {symbol} 5m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
+                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
                 send_all_alerts(msg)
-                print("✅ [SIGNAL! SENT]")
+                print("✅ [SIGNAL!]")
             else:
                 print("❌ No fresh signal")
 

@@ -4,11 +4,11 @@ import numpy as np
 import datetime
 import pytz
 
-# --- การตั้งค่าบอท TRAGOONAEK NO.1 (Back to 15m) ---
+# --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นขยาย Window รอบค่ำ) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
-TIMEFRAME = '15m'      # กลับมาใช้ 15 นาทีตามเดิม
+TIMEFRAME = '15m'      
 SWING_LOOKBACK = 5    
-CHOCH_WINDOW = 15      # กลับมาใช้ 15 แท่งเพื่อความคม
+CHOCH_WINDOW = 20      # ขยับจาก 15 เป็น 20 เพื่อให้ดักสัญญาณได้กว้างขึ้น
 
 # --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -93,7 +93,6 @@ def check_signal():
             df, bars_since_up, bars_since_down = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # เงื่อนไข Trigger ตาม TRAGOONAEK NO. 1
             long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
                           (last['k'] < 25 or last['bull_div']) and \
                           (last['rsi'] >= prev['rsi']) and \

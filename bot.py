@@ -3,7 +3,14 @@ import pandas as pd
 import datetime, pytz
 
 # ================= CONFIG =================
-SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']
+SYMBOLS = [
+    'BTC/USDT',
+    'ETH/USDT',
+    'SOL/USDT',
+    'DOGE/USDT',
+    'HYPE/USDT'   # ✅ เพิ่ม HYPE
+]
+
 TIMEFRAME = '15m'
 STATE_FILE = 'signal_state.json'
 
@@ -122,14 +129,22 @@ def run():
     now = thai_time_str()
 
     for sym in SYMBOLS:
+        if sym not in ex.markets:
+            print(f"⚠️ {sym} NOT AVAILABLE ON OKX — SKIP")
+            continue
+
         print(f"\n⏳ Checking {sym}")
 
-        df = pd.DataFrame(
-            ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
-            columns=['t','open','high','low','close','v']
-        )
-        df = indicators(df)
+        try:
+            df = pd.DataFrame(
+                ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
+                columns=['t','open','high','low','close','v']
+            )
+        except Exception as e:
+            print(f"❌ Fetch error {sym}:", e)
+            continue
 
+        df = indicators(df)
         prev, last = df.iloc[-2], df.iloc[-1]
 
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
@@ -146,13 +161,13 @@ def run():
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             if state.get(key) != 'LONG_SIGNAL':
                 print(f"⚠️ SIGNAL LONG {sym}")
-                notify(f"⚠️ SIGNAL LONG {sym}\nเตรียมเข้า\n🕒 {now}", sound="pushover")
+                notify(f"⚠️ SIGNAL LONG {sym}\nเตรียมเข้า\n🕒 {now}")
                 state[key] = 'LONG_SIGNAL'
 
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
             if state.get(key) != 'SHORT_SIGNAL':
                 print(f"⚠️ SIGNAL SHORT {sym}")
-                notify(f"⚠️ SIGNAL SHORT {sym}\nเตรียมเข้า\n🕒 {now}", sound="pushover")
+                notify(f"⚠️ SIGNAL SHORT {sym}\nเตรียมเข้า\n🕒 {now}")
                 state[key] = 'SHORT_SIGNAL'
 
         # ===== STAGE 2 : ENTRY =====

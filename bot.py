@@ -4,17 +4,15 @@ import numpy as np
 import datetime
 import pytz
 
-# --- การตั้งค่าบอท TRAGOONAEK NO.1 (ฉบับจูนความไวตามสคริปต์หน้าจอ) ---
+# --- การตั้งค่าบอท TRAGOONAEK (ฉบับเน้นไว เท่าสคริปต์หน้าจอ) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'       
 SWING_LOOKBACK = 5     
-CHOCH_WINDOW = 40      # ขยาย Window จาก 20 เป็น 40 เพื่อให้ดักสัญญาณได้กว้างขึ้น
+CHOCH_WINDOW = 60      # ขยายหน้าต่างมองย้อนหลังให้กว้างขึ้น เพื่อไม่ให้ตกรถ
 
 # --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
-PO_USER = os.getenv('PUSHOVER_USER_KEY')
-PO_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
 OKX_KEY = os.getenv('OKX_API_KEY')
 OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
@@ -31,12 +29,12 @@ def send_all_alerts(msg):
         except: pass
 
 def calculate_sk22_logic(df):
-    # [1] RSI & Stochastic RSI
+    # [1] RSI & Stochastic RSI (ปรับจูนให้ตรงกับ Pine Script)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
-    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / avg_loss.replace(0, 0.00001)
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -45,9 +43,8 @@ def calculate_sk22_logic(df):
     df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min).replace(0, 0.00001)
     df['k'] = df['stoch_rsi'].rolling(window=3).mean()
     df['d'] = df['k'].rolling(window=3).mean()
-    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     
-    # [2] ระบบหาระยะ CHoCH (แบบ Fast Fix)
+    # [2] ระบบหาระยะ CHoCH
     df['is_ph'] = df['high'][(df['high'].shift(SWING_LOOKBACK) < df['high']) & (df['high'].shift(-SWING_LOOKBACK) < df['high'])]
     df['is_pl'] = df['low'][(df['low'].shift(SWING_LOOKBACK) > df['low']) & (df['low'].shift(-SWING_LOOKBACK) > df['low'])]
     df['last_ph'] = df['is_ph'].ffill()
@@ -61,10 +58,6 @@ def calculate_sk22_logic(df):
 
     bars_since_up = bars_since(df['is_choch_up'])
     bars_since_down = bars_since(df['is_choch_down'])
-    
-    # [3] Divergence (เช็คย้อนหลัง 10 แท่ง)
-    df['bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
-    df['bear_div'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
     
     return df, bars_since_up, bars_since_down
 
@@ -81,15 +74,15 @@ def check_signal():
             df, bars_since_up, bars_since_down = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # ปรับจูนเงื่อนไขให้ไวขึ้น (K < 35 และ CHOCH_WINDOW 40)
-            long_trigger = (last['k'] > last['d']) and \
-                          (last['k'] < 35 or last['bull_div']) and \
-                          (last['rsi'] >= prev['rsi']) and \
+            # --- จุดตัดสินใจ (จูนใหม่ให้เหมือนสคริปต์หน้าจอ) ---
+            # 1. LONG: K ตัด D ขึ้น และ K ยังอยู่โซนล่าง (ต่ำกว่า 50) + CHoCH Up ไม่นานเกินไป
+            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
+                          (last['k'] < 50) and \
                           (bars_since_up <= CHOCH_WINDOW)
 
-            short_trigger = (last['k'] < last['d']) and \
-                           (last['k'] > 65 or last['bear_div']) and \
-                           (last['rsi'] <= prev['rsi']) and \
+            # 2. SHORT: K ตัด D ลง และ K ยังอยู่โซนบน (สูงกว่า 50) + CHoCH Down ไม่นานเกินไป
+            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
+                           (last['k'] > 50) and \
                            (bars_since_down <= CHOCH_WINDOW)
 
             sl_long = round(df['low'].tail(2).min(), 4)
@@ -98,11 +91,11 @@ def check_signal():
             print(f"🔍 {symbol} | K: {last['k']:.2f} | Up: {bars_since_up}", end=" ")
 
             if long_trigger:
-                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_long}*\n🕒 Time: {now_thai}"
+                msg = f"🚀 *[LONG {symbol}]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_long}*\n🕒 {now_thai}"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             elif short_trigger:
-                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_short}*\n🕒 Time: {now_thai}"
+                msg = f"🔻 *[SHORT {symbol}]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_short}*\n🕒 {now_thai}"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             else:

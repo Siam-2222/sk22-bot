@@ -4,10 +4,9 @@ import numpy as np
 import datetime
 import pytz
 
-# --- ตั้งค่า TRAGOONAEK NO.1 (ฉบับรันจริง 24 ชม.) ---
+# --- ตั้งค่า TRAGOONAEK NO.1 (ปรับจูนให้ตรงกับ Fast Signal Fix) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'
-SWING_LOOKBACK = 5
 
 # ดึงรหัสลับจาก GitHub
 PO_USER = os.getenv('PUSHOVER_USER_KEY')
@@ -20,62 +19,54 @@ OKX_PW = os.getenv('OKX_PASSPHRASE')
 
 def get_thai_time():
     tz_thai = pytz.timezone('Asia/Bangkok')
-    return datetime.datetime.now(tz_thai).strftime('%Y-%m-%d %H:%M:%S')
+    return datetime.datetime.now(tz_thai).strftime('%H:%M:%S')
 
 def send_all_alerts(msg):
-    """ส่งแจ้งเตือนฉุกเฉินระดับ 2 (Siren) และ Telegram"""
-    # [1] Pushover - Emergency Siren
     if PO_USER and PO_TOKEN:
         try:
             requests.post("https://api.pushover.net/1/messages.json", data={
                 "token": PO_TOKEN, "user": PO_USER, "message": msg,
-                "title": "🚨 TRAGOONAEK SIGNAL!", "sound": "siren", 
-                "priority": 2, "retry": 30, "expire": 3600
+                "title": "🚨 TRAGOONAEK SIGNAL!", "sound": "siren", "priority": 1
             }, timeout=15)
         except: pass
 
-    # [2] Telegram - Message
     if TG_TOKEN and TG_CHAT_ID:
         try:
-            url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+            url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage'
             requests.post(url, data={'chat_id': TG_CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
         except: pass
 
 def calculate_sk22_logic(df):
-    """คำนวณสูตรตาม Pine Script หน้าจอพี่วิทยา"""
-    # RSI & Stoch RSI
+    # 1. RSI แบบ Wilder's Smoothing (เพื่อให้ตรงกับ ta.rsi ใน TradingView)
     delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    df['rsi'] = 100 - (100 / (1 + (gain / loss.replace(0, 0.00001))))
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    # ใช้ค่า EWM แทน Rolling Mean เพื่อให้ตรงกับสูตร Wilder
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
+    df['rsi'] = 100 - (100 / (1 + rs))
     
+    # 2. Stochastic RSI
     rsi_low = df['rsi'].rolling(window=14).min()
     rsi_high = df['rsi'].rolling(window=14).max()
-    df['k'] = (100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)).rolling(window=3).mean()
+    # คำนวณ %K และ %D
+    stoch_rsi = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)
+    df['k'] = stoch_rsi.rolling(window=3).mean()
     df['d'] = df['k'].rolling(window=3).mean()
 
-    # ATR (สำหรับ SL เส้นสีเงิน)
+    # 3. ATR 14
     tr = pd.concat([df['high']-df['low'], abs(df['high']-df['close'].shift()), abs(df['low']-df['close'].shift())], axis=1).max(axis=1)
     df['atr'] = tr.rolling(window=14).mean()
 
-    # Divergence 
+    # 4. Divergence Logic (ตามสคริปต์ Fast Fix)
+    # ใช้เปรียบเทียบค่าสูงสุด/ต่ำสุดย้อนหลัง 5 แท่ง เทียบกับช่วง 10 แท่งก่อนหน้า
     df['is_bear_div'] = (df['high'].shift(1).rolling(5).max() > df['high'].shift(10).rolling(5).max()) & \
                         (df['rsi'].shift(1).rolling(5).max() < df['rsi'].shift(10).rolling(5).max())
     df['is_bull_div'] = (df['low'].shift(1).rolling(5).min() < df['low'].shift(10).rolling(5).min()) & \
                         (df['rsi'].shift(1).rolling(5).min() > df['rsi'].shift(10).rolling(5).min())
 
-    # CHoCH Detection
-    df['last_ph'] = df['high'][(df['high'].shift(5) < df['high']) & (df['high'].shift(-5) < df['high'])].ffill().shift(1)
-    df['last_pl'] = df['low'][(df['low'].shift(5) > df['low']) & (df['low'].shift(-5) > df['low'])].ffill().shift(1)
-    
-    def get_bars_since(condition):
-        idx = np.where(condition)[0]
-        return (len(df) - 1) - idx[-1] if len(idx) > 0 else 999
-
-    bs_up = get_bars_since(df['close'] > df['last_ph'])
-    bs_down = get_bars_since(df['close'] < df['last_pl'])
-
-    return df, bs_up, bs_down
+    return df
 
 def check_signal():
     exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW})
@@ -84,18 +75,23 @@ def check_signal():
     
     for symbol in SYMBOLS:
         try:
-            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
+            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-            df, bs_up, bs_down = calculate_sk22_logic(df)
+            df = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # LONG: K ตัด D ขึ้น และ (K < 25 หรือ มี Bull Div)
-            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
-                          (last['k'] < 25 or (last['is_bull_div'] and last['k'] < 50))
+            # --- เงื่อนไข Trigger (ถอดแบบจาก Fast Signal Fix) ---
+            # 1. Sto K ตัด D
+            # 2. (K < 25) หรือ (มี Bull Div และ K < 50)
+            # 3. RSI ต้องงัดหัวขึ้น (rsi >= prev rsi)
             
-            # SHORT: K ตัด D ลง และ (K > 75 หรือ มี Bear Div)
+            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
+                          (last['k'] < 25 or (last['is_bull_div'] and last['k'] < 50)) and \
+                          (last['rsi'] >= prev['rsi'])
+            
             short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
-                           (last['k'] > 75 or (last['is_bear_div'] and last['k'] < 50))
+                           (last['k'] > 75 or (last['is_bear_div'] and last['k'] > 50)) and \
+                           (last['rsi'] <= prev['rsi'])
 
             if long_trigger:
                 sl = round(last['low'] - (last['atr'] * 1.5), 4)
@@ -106,7 +102,8 @@ def check_signal():
                 send_all_alerts(f"🔻 *[SHORT {symbol}]*\n💰 Entry: {last['close']}\n🛑 SL: {sl}\n🕒 {now_thai}")
                 print(f"🔍 {symbol:9} ✅ SIGNAL SENT")
             else:
-                print(f"🔍 {symbol:9} | K: {last['k']:5.2f} | No Signal")
+                # แสดงค่า K และ RSI ล่าสุดเพื่อเช็คสถานะ
+                print(f"🔍 {symbol:9} | K:{last['k']:5.1f} | RSI:{last['rsi']:4.1f} | No Signal")
 
         except Exception as e:
             print(f"⚠️ Error {symbol}: {e}")

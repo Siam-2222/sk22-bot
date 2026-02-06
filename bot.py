@@ -13,6 +13,7 @@ SYMBOLS = [
 
 TIMEFRAME = '15m'
 STATE_FILE = 'signal_state.json'
+SCAN_INTERVAL = 900  # 15 นาที
 
 TG_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TG_CHAT_ID = os.getenv('CHAT_ID')
@@ -36,7 +37,8 @@ def thai_time_str():
 
 
 def is_sleep_time():
-    return 0 <= thai_now().hour < 7   # 00:00 - 06:59
+    hour = thai_now().hour
+    return hour < 6   # พัก 00:00 – 05:59
 
 
 # ---------- STATE ----------
@@ -110,16 +112,9 @@ def indicators(df):
     return df
 
 
-# ---------- MAIN ----------
-def run():
-    print("🚀 BOT STARTED | TF 15m")
-    print("🕒 Thai Time:", thai_time_str())
-
-    if is_sleep_time():
-        print("🌙 BOT SLEEP MODE (00:00 - 07:00 TH)")
-        print(f"⏸️ Last Check: {thai_time_str()}")
-        print("⏳ WAIT NEXT ROUND\n")
-        return
+# ---------- SCAN ----------
+def scan():
+    print("\n🔄 SCAN STARTED |", thai_time_str())
 
     ex = ccxt.okx({
         'apiKey': OKX_KEY,
@@ -134,10 +129,10 @@ def run():
 
     for sym in SYMBOLS:
         if sym not in ex.markets:
-            print(f"⚠️ {sym} NOT AVAILABLE ON OKX — SKIP")
+            print(f"⚠️ {sym} NOT AVAILABLE — SKIP")
             continue
 
-        print(f"\n⏳ Checking {sym}")
+        print(f"\n⏳ Checking {sym} | {thai_time_str()}")
 
         try:
             df = pd.DataFrame(
@@ -161,7 +156,6 @@ def run():
 
         key = f"{sym}_{TIMEFRAME}"
 
-        # SIGNAL
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             if state.get(key) != 'LONG_SIGNAL':
                 notify(f"⚠️ SIGNAL LONG {sym}\n🕒 {now}")
@@ -172,7 +166,6 @@ def run():
                 notify(f"⚠️ SIGNAL SHORT {sym}\n🕒 {now}")
                 state[key] = 'SHORT_SIGNAL'
 
-        # ENTRY
         if state.get(key) == 'LONG_SIGNAL' and last['close'] > last['ema50']:
             atr = last['atr']
             notify(
@@ -194,8 +187,19 @@ def run():
             state[key] = 'IN_SHORT'
 
     save_state(state)
-    print(f"\n✅ BOT FINISHED | Last Scan: {thai_time_str()}\n")
+    print("✅ SCAN FINISHED |", thai_time_str())
 
 
+# ---------- LOOP ----------
 if __name__ == "__main__":
-    run()
+    print("🚀 BOT STARTED | TF 15m | AUTO LOOP")
+
+    while True:
+        if is_sleep_time():
+            print(f"🌙 SLEEP MODE | {thai_time_str()} (พักถึง 06:00)")
+            time.sleep(300)
+            continue
+
+        scan()
+        print(f"⏳ WAIT 15 MINUTES...\n")
+        time.sleep(SCAN_INTERVAL)

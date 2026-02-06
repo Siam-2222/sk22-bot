@@ -4,7 +4,7 @@ import numpy as np
 import datetime
 import pytz
 
-# --- ตั้งค่า TRAGOONAEK NO.1 (ฉบับปลุกชีพ - เน้นทำงาน ไม่เน้นนอน) ---
+# --- ตั้งค่า TRAGOONAEK NO.1 (ฉบับ Copy TradingView 100%) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'
 
@@ -36,22 +36,36 @@ def send_all_alerts(msg):
         except: pass
 
 def calculate_sk22_logic(df):
-    # RSI แบบมาตรฐาน (เหมือนหน้าจอพี่)
+    # 1. RSI แบบ Wilder's (เพื่อให้ตรง ta.rsi เป๊ะ)
     delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-    df['rsi'] = 100 - (100 / (1 + (gain / loss.replace(0, 0.00001))))
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
     
-    # Stochastic RSI
+    # สูตร Wilder's Smoothing
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # 2. Stochastic RSI (ตรงตามสคริปต์พี่)
     rsi_low = df['rsi'].rolling(window=14).min()
     rsi_high = df['rsi'].rolling(window=14).max()
-    stoch_rsi = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)
-    df['k'] = stoch_rsi.rolling(window=3).mean()
+    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)
+    
+    # %K และ %D แบบ SMA 3
+    df['k'] = df['stoch_rsi'].rolling(window=3).mean()
     df['d'] = df['k'].rolling(window=3).mean()
+    
+    # 3. ATR & Divergence (แบบง่ายเพื่อความไว)
     df['atr'] = (df['high'] - df['low']).rolling(window=14).mean()
     
-    # เช็ก Bullish Divergence แบบง่ายๆ (ราคาลง rsi ขึ้น)
-    df['is_bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
+    # Divergence SK 22
+    df['is_bull_div'] = (df['low'].shift(1).rolling(5).min() < df['low'].shift(10).rolling(5).min()) & \
+                        (df['rsi'].shift(1).rolling(5).min() > df['rsi'].shift(10).rolling(5).min())
+    df['is_bear_div'] = (df['high'].shift(1).rolling(5).max() > df['high'].shift(10).rolling(5).max()) & \
+                        (df['rsi'].shift(1).rolling(5).max() < df['rsi'].shift(10).rolling(5).max())
+    
     return df
 
 def check_signal():
@@ -66,12 +80,16 @@ def check_signal():
             df = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # --- เงื่อนไข Trigger (ฉบับช่างไฟวิทยา: เอาป้ายเป็นหลัก) ---
-            # LONG: K อยู่โซนต่ำ (< 35) และ K งัดขึ้นจากเมื่อกี้นิดเดียวก็เอาเลย!
-            long_trigger = (last['k'] < 35) and (last['k'] > prev['k'])
-            
-            # SHORT: K อยู่โซนสูง (> 65) และ K เริ่มหักหัวลง
-            short_trigger = (last['k'] > 65) and (last['k'] < prev['k'])
+            # --- เงื่อนไข Trigger (ถอดรหัสจากสคริปต์พี่ 1:1) ---
+            # crossover(k, d) AND (k < 25 OR bull_div) AND rsi >= rsi[1]
+            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
+                          (last['k'] < 25 or last['is_bull_div']) and \
+                          (last['rsi'] >= prev['rsi'])
+
+            # crossunder(k, d) AND (k > 75 OR bear_div) AND rsi <= rsi[1]
+            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
+                           (last['k'] > 75 or last['is_bear_div']) and \
+                           (last['rsi'] <= prev['rsi'])
 
             if long_trigger:
                 sl = round(last['low'] - (last['atr'] * 1.5), 4)
@@ -82,7 +100,7 @@ def check_signal():
                 send_all_alerts(f"🔻 *[SHORT {symbol}]*\n💰 ราคา: {last['close']}\n🛑 SL: {sl}\n🕒 {now_thai}")
                 print(f"🔍 {symbol:9} ✅ SIGNAL SENT")
             else:
-                print(f"🔍 {symbol:9} | K:{last['k']:5.1f} | RSI:{last['rsi']:4.1f} | No Signal")
+                print(f"🔍 {symbol:9} | K:{last['k']:5.1f} | D:{last['d']:5.1f} | RSI:{last['rsi']:4.1f} | No Signal")
 
         except Exception as e:
             print(f"⚠️ Error {symbol}: {e}")

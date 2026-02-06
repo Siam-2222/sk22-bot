@@ -4,7 +4,7 @@ import numpy as np
 import datetime
 import pytz
 
-# --- ตั้งค่า TRAGOONAEK NO.1 (ฉบับไวสายฟ้า - ตรงหน้าจอ) ---
+# --- ตั้งค่า TRAGOONAEK NO.1 (ฉบับปลุกชีพ - เน้นทำงาน ไม่เน้นนอน) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'
 
@@ -36,7 +36,7 @@ def send_all_alerts(msg):
         except: pass
 
 def calculate_sk22_logic(df):
-    # RSI แบบง่าย (SMA) เพื่อให้ไวเท่าหน้าจอ
+    # RSI แบบมาตรฐาน (เหมือนหน้าจอพี่)
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
@@ -49,6 +49,9 @@ def calculate_sk22_logic(df):
     df['k'] = stoch_rsi.rolling(window=3).mean()
     df['d'] = df['k'].rolling(window=3).mean()
     df['atr'] = (df['high'] - df['low']).rolling(window=14).mean()
+    
+    # เช็ก Bullish Divergence แบบง่ายๆ (ราคาลง rsi ขึ้น)
+    df['is_bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
     return df
 
 def check_signal():
@@ -63,12 +66,12 @@ def check_signal():
             df = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            # --- เงื่อนไข Trigger แบบ "ดักทาง" (ไวขึ้น 2 เท่า) ---
-            # LONG: K อยู่ในโซนต่ำ และ (K เริ่มงัดขึ้น หรือ K > D)
-            long_trigger = (last['k'] < 35) and (last['k'] > prev['k']) and (last['rsi'] >= prev['rsi'] - 1)
-
-            # SHORT: K อยู่ในโซนสูง และ (K เริ่มหักลง หรือ K < D)
-            short_trigger = (last['k'] > 65) and (last['k'] < prev['k']) and (last['rsi'] <= prev['rsi'] + 1)
+            # --- เงื่อนไข Trigger (ฉบับช่างไฟวิทยา: เอาป้ายเป็นหลัก) ---
+            # LONG: K อยู่โซนต่ำ (< 35) และ K งัดขึ้นจากเมื่อกี้นิดเดียวก็เอาเลย!
+            long_trigger = (last['k'] < 35) and (last['k'] > prev['k'])
+            
+            # SHORT: K อยู่โซนสูง (> 65) และ K เริ่มหักหัวลง
+            short_trigger = (last['k'] > 65) and (last['k'] < prev['k'])
 
             if long_trigger:
                 sl = round(last['low'] - (last['atr'] * 1.5), 4)

@@ -27,9 +27,9 @@ def get_thai_time():
     return datetime.datetime.now(tz_thai).strftime('%Y-%m-%d %H:%M:%S')
 
 def send_all_alerts(msg):
-    """ส่งแจ้งเตือนทั้ง Pushover (มีเสียงไซเรน) และ Telegram"""
+    """ส่งแจ้งเตือนทั้ง Pushover (เสียงไซเรนระดับสูงสุด) และ Telegram"""
     
-    # [1] ระบบ Pushover (เน้นเสียงดัง)
+    # [1] ระบบ Pushover (ส่งแบบ Emergency: ดังทะลุโหมดเงียบและดังซ้ำ)
     if PO_USER and PO_TOKEN:
         try:
             url_po = "https://api.pushover.net/1/messages.json"
@@ -37,13 +37,17 @@ def send_all_alerts(msg):
                 "token": PO_TOKEN,
                 "user": PO_USER,
                 "message": msg,
-                "title": "🚨 TRAGOONAEK ALERT!",
-                "sound": "siren",      # ตั้งเสียงไซเรน
-                "priority": 1          # บังคับให้ดังแม้เครื่องจะเงียบ
+                "title": "🚨 TRAGOONAEK EMERGENCY!",
+                "sound": "siren",      # ใช้เสียงไซเรน
+                "priority": 2,         # ระดับ 2 = Emergency (ดังเหมือนนาฬิกาปลุก)
+                "retry": 30,           # ถ้าไม่กดอ่าน ให้ดังซ้ำทุก 30 วินาที
+                "expire": 3600         # ให้ดังวนไปเรื่อยๆ เป็นเวลา 1 ชั่วโมง
             }
             res = requests.post(url_po, data=data_po, timeout=15)
             if res.status_code != 200:
                 print(f"❌ Pushover Fail: {res.text}")
+            else:
+                print(f"✅ Pushover SENT (Priority 2)")
         except Exception as e:
             print(f"⚠️ Pushover Error: {e}")
 
@@ -52,6 +56,7 @@ def send_all_alerts(msg):
         try:
             url_tg = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
             requests.post(url_tg, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
+            print(f"✅ Telegram SENT")
         except Exception as e:
             print(f"⚠️ Telegram Error: {e}")
 
@@ -90,8 +95,8 @@ def check_signal():
     now_thai = get_thai_time()
     print(f"--- [TRAGOONAEK START: {now_thai}] ---")
     
-    # บรรทัดทดสอบ (ถ้าตั้งค่าถูก Pushover ต้องดังไซเรนทันทีที่รัน!)
-    # send_all_alerts(f"📢 บอทช่างไฟวิทยา เริ่มรันระบบทดสอบเสียงไซเรน!\n🕒 {now_thai}")
+    # --- จุดทดสอบเสียง (เอาเครื่องหมาย # ออกถ้าพี่อยากกดรันแล้วให้มันดังทันทีเพื่อเช็กเสียง) ---
+    # send_all_alerts(f"📢 ทดสอบระบบไซเรนระดับสูงสุด!\n🕒 {now_thai}")
 
     for symbol in SYMBOLS:
         try:

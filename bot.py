@@ -16,14 +16,20 @@ PUSHOVER_API_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
 OKX_KEY = os.getenv('OKX_API_KEY')
 OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
-
 # ==========================================
 
 
-def thai_time():
-    return datetime.datetime.now(
-        pytz.timezone('Asia/Bangkok')
-    ).strftime('%Y-%m-%d %H:%M:%S')
+def thai_now():
+    return datetime.datetime.now(pytz.timezone('Asia/Bangkok'))
+
+
+def thai_time_str():
+    return thai_now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def is_sleep_time():
+    hour = thai_now().hour
+    return 0 <= hour < 7   # 00:00 - 06:59
 
 
 def load_state():
@@ -96,7 +102,13 @@ def indicators(df):
 
 def run():
     print("🚀 BOT STARTED | TF 15m")
-    print("🕒", thai_time())
+    print("🕒 Thai Time:", thai_time_str())
+
+    # ===== STOP TIME 00:00 - 07:00 =====
+    if is_sleep_time():
+        print("🌙 BOT SLEEP TIME (00:00 - 07:00 TH)")
+        print("⛔ Skip all trading logic\n")
+        return
 
     ex = ccxt.okx({
         'apiKey': OKX_KEY,
@@ -107,7 +119,7 @@ def run():
     ex.load_markets()
 
     state = load_state()
-    now = thai_time()
+    now = thai_time_str()
 
     for sym in SYMBOLS:
         print(f"\n⏳ Checking {sym}")
@@ -123,7 +135,10 @@ def run():
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
         downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
 
-        print(f"Trend | Up:{uptrend} Down:{downtrend} | Close:{last['close']}")
+        print(
+            f"Trend | Up:{uptrend} Down:{downtrend} | "
+            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{last['close']}"
+        )
 
         key = f"{sym}_{TIMEFRAME}"
 
@@ -143,29 +158,27 @@ def run():
         # ===== STAGE 2 : ENTRY =====
         if state.get(key) == 'LONG_SIGNAL' and last['close'] > last['ema50']:
             atr = last['atr']
-            print(f"🚀 ENTRY LONG {sym} @ {last['close']}")
+            print(f"🚀 ENTRY LONG {sym}")
             notify(
                 f"🚀 ENTRY LONG {sym}\n"
                 f"💰 {last['close']}\n"
                 f"🎯 TP1 {round(last['close']+atr,4)}\n"
                 f"🎯 TP2 {round(last['close']+2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']+3*atr,4)}\n"
-                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}",
-                sound="cashregister"
+                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}"
             )
             state[key] = 'IN_LONG'
 
         if state.get(key) == 'SHORT_SIGNAL' and last['close'] < last['ema50']:
             atr = last['atr']
-            print(f"🔻 ENTRY SHORT {sym} @ {last['close']}")
+            print(f"🔻 ENTRY SHORT {sym}")
             notify(
                 f"🔻 ENTRY SHORT {sym}\n"
                 f"💰 {last['close']}\n"
                 f"🎯 TP1 {round(last['close']-atr,4)}\n"
                 f"🎯 TP2 {round(last['close']-2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']-3*atr,4)}\n"
-                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}",
-                sound="cashregister"
+                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}"
             )
             state[key] = 'IN_SHORT'
 

@@ -10,20 +10,20 @@ STATE_FILE = 'signal_state.json'
 TG_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TG_CHAT_ID = os.getenv('CHAT_ID')
 
-PO_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
-PO_USER = os.getenv('PUSHOVER_USER_KEY')
+PUSHOVER_USER_KEY = os.getenv('PUSHOVER_USER_KEY')
+PUSHOVER_API_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
 
 OKX_KEY = os.getenv('OKX_API_KEY')
 OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
 
-# ========================================
+# ==========================================
 
 
 def thai_time():
     return datetime.datetime.now(
         pytz.timezone('Asia/Bangkok')
-    ).strftime('%H:%M:%S')
+    ).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def load_state():
@@ -36,38 +36,36 @@ def save_state(s):
     json.dump(s, open(STATE_FILE, 'w'))
 
 
-def send(msg):
-    # ----- Telegram -----
-    if TG_TOKEN and TG_CHAT_ID:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                data={
-                    "chat_id": TG_CHAT_ID,
-                    "text": msg,
-                    "parse_mode": "Markdown"
-                },
-                timeout=10
-            )
-        except:
-            pass
+def send_telegram(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            data={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+    except Exception as e:
+        print("❌ Telegram error:", e)
 
-    # ----- Pushover -----
-    if PO_TOKEN and PO_USER:
-        try:
-            requests.post(
-                "https://api.pushover.net/1/messages.json",
-                data={
-                    "token": PO_TOKEN,
-                    "user": PO_USER,
-                    "title": "TRADING SIGNAL",
-                    "message": msg,
-                    "sound": "siren"
-                },
-                timeout=10
-            )
-        except:
-            pass
+
+def send_pushover(msg, sound="cashregister"):
+    try:
+        requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": PUSHOVER_API_TOKEN,
+                "user": PUSHOVER_USER_KEY,
+                "message": msg,
+                "sound": sound
+            },
+            timeout=10
+        )
+    except Exception as e:
+        print("❌ Pushover error:", e)
+
+
+def notify(msg, sound="cashregister"):
+    send_telegram(msg)
+    send_pushover(msg, sound)
 
 
 def indicators(df):
@@ -97,6 +95,9 @@ def indicators(df):
 
 
 def run():
+    print("🚀 BOT STARTED | TF 15m")
+    print("🕒", thai_time())
+
     ex = ccxt.okx({
         'apiKey': OKX_KEY,
         'secret': OKX_SECRET,
@@ -109,56 +110,67 @@ def run():
     now = thai_time()
 
     for sym in SYMBOLS:
+        print(f"\n⏳ Checking {sym}")
+
         df = pd.DataFrame(
             ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
             columns=['t','open','high','low','close','v']
         )
-
         df = indicators(df)
+
         prev, last = df.iloc[-2], df.iloc[-1]
 
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
         downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
 
+        print(f"Trend | Up:{uptrend} Down:{downtrend} | Close:{last['close']}")
+
         key = f"{sym}_{TIMEFRAME}"
 
-        # ========= STAGE 1 : SIGNAL =========
+        # ===== STAGE 1 : SIGNAL =====
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             if state.get(key) != 'LONG_SIGNAL':
-                send(f"⚠️ *SIGNAL LONG {sym}*\nTF 15m\n🕒 {now}")
+                print(f"⚠️ SIGNAL LONG {sym}")
+                notify(f"⚠️ SIGNAL LONG {sym}\nเตรียมเข้า\n🕒 {now}", sound="pushover")
                 state[key] = 'LONG_SIGNAL'
 
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
             if state.get(key) != 'SHORT_SIGNAL':
-                send(f"⚠️ *SIGNAL SHORT {sym}*\nTF 15m\n🕒 {now}")
+                print(f"⚠️ SIGNAL SHORT {sym}")
+                notify(f"⚠️ SIGNAL SHORT {sym}\nเตรียมเข้า\n🕒 {now}", sound="pushover")
                 state[key] = 'SHORT_SIGNAL'
 
-        # ========= STAGE 2 : ENTRY =========
+        # ===== STAGE 2 : ENTRY =====
         if state.get(key) == 'LONG_SIGNAL' and last['close'] > last['ema50']:
             atr = last['atr']
-            send(
-                f"🚀 *ENTRY LONG {sym}*\n"
+            print(f"🚀 ENTRY LONG {sym} @ {last['close']}")
+            notify(
+                f"🚀 ENTRY LONG {sym}\n"
                 f"💰 {last['close']}\n"
                 f"🎯 TP1 {round(last['close']+atr,4)}\n"
                 f"🎯 TP2 {round(last['close']+2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']+3*atr,4)}\n"
-                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}"
+                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}",
+                sound="cashregister"
             )
             state[key] = 'IN_LONG'
 
         if state.get(key) == 'SHORT_SIGNAL' and last['close'] < last['ema50']:
             atr = last['atr']
-            send(
-                f"🔻 *ENTRY SHORT {sym}*\n"
+            print(f"🔻 ENTRY SHORT {sym} @ {last['close']}")
+            notify(
+                f"🔻 ENTRY SHORT {sym}\n"
                 f"💰 {last['close']}\n"
                 f"🎯 TP1 {round(last['close']-atr,4)}\n"
                 f"🎯 TP2 {round(last['close']-2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']-3*atr,4)}\n"
-                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}"
+                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}",
+                sound="cashregister"
             )
             state[key] = 'IN_SHORT'
 
     save_state(state)
+    print("\n✅ BOT FINISHED\n")
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ SYMBOLS = [
     'ETH/USDT',
     'SOL/USDT',
     'DOGE/USDT',
-    'HYPE/USDT'   # ✅ เพิ่ม HYPE
+    'HYPE/USDT'
 ]
 
 TIMEFRAME = '15m'
@@ -76,9 +76,9 @@ def send_pushover(msg, sound="cashregister"):
         print("❌ Pushover error:", e)
 
 
-def notify(msg, sound="cashregister"):
+def notify(msg):
     send_telegram(msg)
-    send_pushover(msg, sound)
+    send_pushover(msg)
 
 
 def indicators(df):
@@ -109,13 +109,15 @@ def indicators(df):
 
 def run():
     print("🚀 BOT STARTED | TF 15m")
-    print("🕒 Thai Time:", thai_time_str())
 
-    # ===== STOP TIME 00:00 - 07:00 =====
+    # ===== STOP TIME =====
     if is_sleep_time():
-        print("🌙 BOT SLEEP TIME (00:00 - 07:00 TH)")
-        print("⛔ Skip all trading logic\n")
+        print(f"🌙 BOT SLEEP TIME | {thai_time_str()}")
+        print("⛔ Skip trading logic\n")
         return
+
+    scan_time = thai_time_str()
+    print(f"\n🔄 SCAN STARTED | {scan_time}")
 
     ex = ccxt.okx({
         'apiKey': OKX_KEY,
@@ -126,14 +128,13 @@ def run():
     ex.load_markets()
 
     state = load_state()
-    now = thai_time_str()
 
     for sym in SYMBOLS:
+        print(f"\n⏳ Checking {sym} | {thai_time_str()}")
+
         if sym not in ex.markets:
             print(f"⚠️ {sym} NOT AVAILABLE ON OKX — SKIP")
             continue
-
-        print(f"\n⏳ Checking {sym}")
 
         try:
             df = pd.DataFrame(
@@ -161,13 +162,13 @@ def run():
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             if state.get(key) != 'LONG_SIGNAL':
                 print(f"⚠️ SIGNAL LONG {sym}")
-                notify(f"⚠️ SIGNAL LONG {sym}\nเตรียมเข้า\n🕒 {now}")
+                notify(f"⚠️ SIGNAL LONG {sym}\nเตรียมเข้า\n🕒 {thai_time_str()}")
                 state[key] = 'LONG_SIGNAL'
 
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
             if state.get(key) != 'SHORT_SIGNAL':
                 print(f"⚠️ SIGNAL SHORT {sym}")
-                notify(f"⚠️ SIGNAL SHORT {sym}\nเตรียมเข้า\n🕒 {now}")
+                notify(f"⚠️ SIGNAL SHORT {sym}\nเตรียมเข้า\n🕒 {thai_time_str()}")
                 state[key] = 'SHORT_SIGNAL'
 
         # ===== STAGE 2 : ENTRY =====
@@ -180,7 +181,8 @@ def run():
                 f"🎯 TP1 {round(last['close']+atr,4)}\n"
                 f"🎯 TP2 {round(last['close']+2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']+3*atr,4)}\n"
-                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}"
+                f"🛑 SL {round(last['close']-1.5*atr,4)}\n"
+                f"🕒 {thai_time_str()}"
             )
             state[key] = 'IN_LONG'
 
@@ -193,12 +195,13 @@ def run():
                 f"🎯 TP1 {round(last['close']-atr,4)}\n"
                 f"🎯 TP2 {round(last['close']-2*atr,4)}\n"
                 f"🎯 TP3 {round(last['close']-3*atr,4)}\n"
-                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}"
+                f"🛑 SL {round(last['close']+1.5*atr,4)}\n"
+                f"🕒 {thai_time_str()}"
             )
             state[key] = 'IN_SHORT'
 
     save_state(state)
-    print("\n✅ BOT FINISHED\n")
+    print(f"\n✅ BOT FINISHED | {thai_time_str()}\n")
 
 
 if __name__ == "__main__":

@@ -1,103 +1,165 @@
-import os, ccxt, requests
+import os, ccxt, requests, json
 import pandas as pd
-import numpy as np
-import datetime
-import pytz
+import datetime, pytz
 
-# --- ตั้งค่า TRAGOONAEK NO.1 (เหรียญชุดเดิมของพี่วิทยา: BTC, ETH, SOL, DOGE, HYPE) ---
-SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
+# ================= CONFIG =================
+SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']
 TIMEFRAME = '15m'
+STATE_FILE = 'signal_state.json'
 
-PO_USER = os.getenv('PUSHOVER_USER_KEY')
-PO_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
 TG_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TG_CHAT_ID = os.getenv('CHAT_ID')
+
+PO_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
+PO_USER = os.getenv('PUSHOVER_USER_KEY')
+
 OKX_KEY = os.getenv('OKX_API_KEY')
 OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
 
-def get_thai_time():
-    tz_thai = pytz.timezone('Asia/Bangkok')
-    return datetime.datetime.now(tz_thai).strftime('%H:%M:%S')
+# ========================================
 
-def send_all_alerts(msg):
-    if PO_USER and PO_TOKEN:
-        try:
-            requests.post("https://api.pushover.net/1/messages.json", data={
-                "token": PO_TOKEN, "user": PO_USER, "message": msg,
-                "title": "🚨 TRAGOONAEK SIGNAL!", "sound": "siren", "priority": 2,
-                "retry": 30, "expire": 3600
-            }, timeout=15)
-        except: pass
+
+def thai_time():
+    return datetime.datetime.now(
+        pytz.timezone('Asia/Bangkok')
+    ).strftime('%H:%M:%S')
+
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        return json.load(open(STATE_FILE))
+    return {}
+
+
+def save_state(s):
+    json.dump(s, open(STATE_FILE, 'w'))
+
+
+def send(msg):
+    # ----- Telegram -----
     if TG_TOKEN and TG_CHAT_ID:
         try:
-            url = f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage'
-            requests.post(url, data={'chat_id': TG_CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
-        except: pass
+            requests.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                data={
+                    "chat_id": TG_CHAT_ID,
+                    "text": msg,
+                    "parse_mode": "Markdown"
+                },
+                timeout=10
+            )
+        except:
+            pass
 
-def calculate_sk22_logic(df):
-    # RSI แบบ Wilder's Smoothing
+    # ----- Pushover -----
+    if PO_TOKEN and PO_USER:
+        try:
+            requests.post(
+                "https://api.pushover.net/1/messages.json",
+                data={
+                    "token": PO_TOKEN,
+                    "user": PO_USER,
+                    "title": "TRADING SIGNAL",
+                    "message": msg,
+                    "sound": "siren"
+                },
+                timeout=10
+            )
+        except:
+            pass
+
+
+def indicators(df):
+    df['ema50'] = df['close'].ewm(span=50).mean()
+    df['ema200'] = df['close'].ewm(span=200).mean()
+
     delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, 0.00001)
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.ewm(alpha=1/14).mean() / loss.ewm(alpha=1/14).mean()
     df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # Stochastic RSI
-    rsi_low = df['rsi'].rolling(window=14).min()
-    rsi_high = df['rsi'].rolling(window=14).max()
-    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)
-    df['k'] = df['stoch_rsi'].rolling(window=3).mean()
-    df['d'] = df['k'].rolling(window=3).mean()
-    
-    # ATR สำหรับเส้น Stop Loss
-    df['atr'] = (df['high'] - df['low']).rolling(window=14).mean()
-    
-    # Divergence
-    df['is_bull_div'] = (df['low'].shift(1).rolling(5).min() < df['low'].shift(10).rolling(5).min()) & \
-                        (df['rsi'].shift(1).rolling(5).min() > df['rsi'].shift(10).rolling(5).min())
-    df['is_bear_div'] = (df['high'].shift(1).rolling(5).max() > df['high'].shift(10).rolling(5).max()) & \
-                        (df['rsi'].shift(1).rolling(5).max() < df['rsi'].shift(10).rolling(5).max())
+
+    rsi_low = df['rsi'].rolling(14).min()
+    rsi_high = df['rsi'].rolling(14).max()
+    stoch = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low)
+    df['k'] = stoch.rolling(3).mean()
+    df['d'] = df['k'].rolling(3).mean()
+
+    tr = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - df['close'].shift()).abs(),
+        (df['low'] - df['close'].shift()).abs()
+    ], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14).mean()
+
     return df
 
-def check_signal():
-    exchange = ccxt.okx({'apiKey': OKX_KEY, 'secret': OKX_SECRET, 'password': OKX_PW})
-    now_thai = get_thai_time()
-    print(f"--- [TRAGOONAEK MONITORING: {now_thai}] ---")
-    
-    for symbol in SYMBOLS:
-        try:
-            bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
-            df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-            df = calculate_sk22_logic(df)
-            last, prev = df.iloc[-1], df.iloc[-2]
 
-            # --- จุดตัดสินใจ (จูนความไวพิเศษ: ปลดล็อก RSI) ---
-            # LONG: K ตัด D ขึ้น และ K < 35 (หรือเกิด Bull Div)
-            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
-                          (last['k'] < 35 or last['is_bull_div'])
+def run():
+    ex = ccxt.okx({
+        'apiKey': OKX_KEY,
+        'secret': OKX_SECRET,
+        'password': OKX_PW,
+        'enableRateLimit': True
+    })
+    ex.load_markets()
 
-            # SHORT: K ตัด D ลง และ K > 65 (หรือเกิด Bear Div)
-            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
-                           (last['k'] > 65 or last['is_bear_div'])
+    state = load_state()
+    now = thai_time()
 
-            if long_trigger:
-                sl = round(last['low'] - (last['atr'] * 1.5), 4)
-                send_all_alerts(f"🚀 *[LONG {symbol}]*\n💰 ราคา: {last['close']}\n🛑 SL: {sl}\n🕒 {now_thai}")
-                print(f"🔍 {symbol:9} ✅ SIGNAL SENT")
-            elif short_trigger:
-                sl = round(last['high'] + (last['atr'] * 1.5), 4)
-                send_all_alerts(f"🔻 *[SHORT {symbol}]*\n💰 ราคา: {last['close']}\n🛑 SL: {sl}\n🕒 {now_thai}")
-                print(f"🔍 {symbol:9} ✅ SIGNAL SENT")
-            else:
-                print(f"🔍 {symbol:9} | K:{last['k']:5.1f} | D:{last['d']:5.1f} | No Signal")
+    for sym in SYMBOLS:
+        df = pd.DataFrame(
+            ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
+            columns=['t','open','high','low','close','v']
+        )
 
-        except Exception as e:
-            print(f"⚠️ Error {symbol}: {e}")
-    
-    print(f"--- [FINISHED] ---")
+        df = indicators(df)
+        prev, last = df.iloc[-2], df.iloc[-1]
+
+        uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
+        downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
+
+        key = f"{sym}_{TIMEFRAME}"
+
+        # ========= STAGE 1 : SIGNAL =========
+        if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
+            if state.get(key) != 'LONG_SIGNAL':
+                send(f"⚠️ *SIGNAL LONG {sym}*\nTF 15m\n🕒 {now}")
+                state[key] = 'LONG_SIGNAL'
+
+        if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
+            if state.get(key) != 'SHORT_SIGNAL':
+                send(f"⚠️ *SIGNAL SHORT {sym}*\nTF 15m\n🕒 {now}")
+                state[key] = 'SHORT_SIGNAL'
+
+        # ========= STAGE 2 : ENTRY =========
+        if state.get(key) == 'LONG_SIGNAL' and last['close'] > last['ema50']:
+            atr = last['atr']
+            send(
+                f"🚀 *ENTRY LONG {sym}*\n"
+                f"💰 {last['close']}\n"
+                f"🎯 TP1 {round(last['close']+atr,4)}\n"
+                f"🎯 TP2 {round(last['close']+2*atr,4)}\n"
+                f"🎯 TP3 {round(last['close']+3*atr,4)}\n"
+                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}"
+            )
+            state[key] = 'IN_LONG'
+
+        if state.get(key) == 'SHORT_SIGNAL' and last['close'] < last['ema50']:
+            atr = last['atr']
+            send(
+                f"🔻 *ENTRY SHORT {sym}*\n"
+                f"💰 {last['close']}\n"
+                f"🎯 TP1 {round(last['close']-atr,4)}\n"
+                f"🎯 TP2 {round(last['close']-2*atr,4)}\n"
+                f"🎯 TP3 {round(last['close']-3*atr,4)}\n"
+                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}"
+            )
+            state[key] = 'IN_SHORT'
+
+    save_state(state)
+
 
 if __name__ == "__main__":
-    check_signal()
+    run()

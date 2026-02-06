@@ -26,20 +26,29 @@ OKX_SECRET = os.getenv('OKX_SECRET_KEY')
 OKX_PW = os.getenv('OKX_PASSPHRASE')
 # ==========================================
 
+TZ_TH = pytz.timezone('Asia/Bangkok')
 
 # ---------- TIME ----------
 def thai_now():
-    return datetime.datetime.now(pytz.timezone('Asia/Bangkok'))
-
+    return datetime.datetime.now(TZ_TH)
 
 def thai_time_str():
     return thai_now().strftime('%Y-%m-%d %H:%M:%S')
 
+def today_str():
+    return thai_now().strftime('%Y-%m-%d')
 
 def is_sleep_time():
-    hour = thai_now().hour
-    return hour < 6   # พัก 00:00 – 05:59
+    return 0 <= thai_now().hour < 6  # 00:00–05:59
 
+def wait_for_next_15m():
+    now = thai_now()
+    minute = now.minute
+    wait_min = 15 - (minute % 15)
+    next_run = (now + datetime.timedelta(minutes=wait_min)).replace(second=0, microsecond=0)
+    wait_sec = int((next_run - now).total_seconds())
+    print(f"⏰ WAIT SYNC TO 15m | NEXT {next_run.strftime('%H:%M:%S')}")
+    time.sleep(wait_sec)
 
 # ---------- STATE ----------
 def load_state():
@@ -47,43 +56,36 @@ def load_state():
         return json.load(open(STATE_FILE))
     return {}
 
-
 def save_state(s):
     json.dump(s, open(STATE_FILE, 'w'), indent=2)
 
-
 # ---------- NOTIFY ----------
 def send_telegram(msg):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            data={"chat_id": TG_CHAT_ID, "text": msg},
-            timeout=10
-        )
-    except Exception as e:
-        print("❌ Telegram error:", e)
-
+    if not TG_TOKEN or not TG_CHAT_ID:
+        return
+    requests.post(
+        f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+        data={"chat_id": TG_CHAT_ID, "text": msg},
+        timeout=10
+    )
 
 def send_pushover(msg, sound="cashregister"):
-    try:
-        requests.post(
-            "https://api.pushover.net/1/messages.json",
-            data={
-                "token": PUSHOVER_API_TOKEN,
-                "user": PUSHOVER_USER_KEY,
-                "message": msg,
-                "sound": sound
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print("❌ Pushover error:", e)
-
+    if not PUSHOVER_API_TOKEN or not PUSHOVER_USER_KEY:
+        return
+    requests.post(
+        "https://api.pushover.net/1/messages.json",
+        data={
+            "token": PUSHOVER_API_TOKEN,
+            "user": PUSHOVER_USER_KEY,
+            "message": msg,
+            "sound": sound
+        },
+        timeout=10
+    )
 
 def notify(msg, sound="cashregister"):
     send_telegram(msg)
     send_pushover(msg, sound)
-
 
 # ---------- INDICATORS ----------
 def indicators(df):
@@ -111,10 +113,9 @@ def indicators(df):
 
     return df
 
-
 # ---------- SCAN ----------
 def scan():
-    print("\n🔄 SCAN STARTED |", thai_time_str())
+    print(f"\n🔄 SCAN STARTED | {thai_time_str()}")
 
     ex = ccxt.okx({
         'apiKey': OKX_KEY,
@@ -125,23 +126,16 @@ def scan():
     ex.load_markets()
 
     state = load_state()
-    now = thai_time_str()
+    today = today_str()
 
     for sym in SYMBOLS:
         if sym not in ex.markets:
-            print(f"⚠️ {sym} NOT AVAILABLE — SKIP")
             continue
 
-        print(f"\n⏳ Checking {sym} | {thai_time_str()}")
-
-        try:
-            df = pd.DataFrame(
-                ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
-                columns=['t','open','high','low','close','v']
-            )
-        except Exception as e:
-            print(f"❌ Fetch error {sym}:", e)
-            continue
+        df = pd.DataFrame(
+            ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
+            columns=['t','open','high','low','close','v']
+        )
 
         df = indicators(df)
         prev, last = df.iloc[-2], df.iloc[-1]
@@ -149,57 +143,43 @@ def scan():
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
         downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
 
-        print(
-            f"Trend | Up:{uptrend} Down:{downtrend} | "
-            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{last['close']}"
-        )
-
         key = f"{sym}_{TIMEFRAME}"
+        day_key = f"{key}_date"
+
+        if state.get(day_key) == today:
+            continue  # 🔒 กันยิงซ้ำวันเดียว
 
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
-            if state.get(key) != 'LONG_SIGNAL':
-                notify(f"⚠️ SIGNAL LONG {sym}\n🕒 {now}")
-                state[key] = 'LONG_SIGNAL'
+            notify(f"⚠️ SIGNAL LONG {sym}\n🕒 {thai_time_str()}")
+            state[key] = 'LONG'
+            state[day_key] = today
 
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
-            if state.get(key) != 'SHORT_SIGNAL':
-                notify(f"⚠️ SIGNAL SHORT {sym}\n🕒 {now}")
-                state[key] = 'SHORT_SIGNAL'
-
-        if state.get(key) == 'LONG_SIGNAL' and last['close'] > last['ema50']:
-            atr = last['atr']
-            notify(
-                f"🚀 ENTRY LONG {sym}\n"
-                f"💰 {last['close']}\n"
-                f"🎯 TP {round(last['close']+atr,4)}\n"
-                f"🛑 SL {round(last['close']-1.5*atr,4)}\n🕒 {now}"
-            )
-            state[key] = 'IN_LONG'
-
-        if state.get(key) == 'SHORT_SIGNAL' and last['close'] < last['ema50']:
-            atr = last['atr']
-            notify(
-                f"🔻 ENTRY SHORT {sym}\n"
-                f"💰 {last['close']}\n"
-                f"🎯 TP {round(last['close']-atr,4)}\n"
-                f"🛑 SL {round(last['close']+1.5*atr,4)}\n🕒 {now}"
-            )
-            state[key] = 'IN_SHORT'
+            notify(f"⚠️ SIGNAL SHORT {sym}\n🕒 {thai_time_str()}")
+            state[key] = 'SHORT'
+            state[day_key] = today
 
     save_state(state)
-    print("✅ SCAN FINISHED |", thai_time_str())
-
+    print(f"✅ SCAN FINISHED | {thai_time_str()}")
 
 # ---------- LOOP ----------
 if __name__ == "__main__":
-    print("🚀 BOT STARTED | TF 15m | AUTO LOOP")
+    print("🚀 BOT STARTED | TF 15m")
+    state = load_state()
 
     while True:
+        now = thai_now()
+
         if is_sleep_time():
-            print(f"🌙 SLEEP MODE | {thai_time_str()} (พักถึง 06:00)")
+            print(f"🌙 SLEEP MODE | {thai_time_str()}")
             time.sleep(300)
             continue
 
+        # 🔔 แจ้งเตือนตอนตื่น
+        if now.hour == 6 and state.get("last_wakeup") != today_str():
+            notify("☀️ BOT WAKE UP | START SCANNING 06:00")
+            state["last_wakeup"] = today_str()
+            save_state(state)
+
+        wait_for_next_15m()
         scan()
-        print(f"⏳ WAIT 15 MINUTES...\n")
-        time.sleep(SCAN_INTERVAL)

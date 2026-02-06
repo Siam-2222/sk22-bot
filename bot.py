@@ -4,11 +4,11 @@ import numpy as np
 import datetime
 import pytz
 
-# --- การตั้งค่าบอท TRAGOONAEK NO.1 (รุ่นขยาย Window รอบค่ำ) ---
+# --- การตั้งค่าบอท TRAGOONAEK NO.1 (ฉบับจูนความไวตามสคริปต์หน้าจอ) ---
 SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT', 'HYPE/USDT']
 TIMEFRAME = '15m'       
 SWING_LOOKBACK = 5     
-CHOCH_WINDOW = 20      
+CHOCH_WINDOW = 40      # ขยาย Window จาก 20 เป็น 40 เพื่อให้ดักสัญญาณได้กว้างขึ้น
 
 # --- ดึงรหัสลับจาก GitHub Secrets ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -29,21 +29,14 @@ def send_all_alerts(msg):
             url_tg = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
             requests.post(url_tg, data={'chat_id': CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}, timeout=15)
         except: pass
-    if PO_USER and PO_TOKEN:
-        try:
-            url_po = "https://api.pushover.net/1/messages.json"
-            data = {"token": PO_TOKEN, "user": PO_USER, "message": msg, "title": "🚨 TRAGOONAEK ALERT!", "sound": "siren", "priority": 1}
-            requests.post(url_po, data=data, timeout=15)
-        except: pass
 
 def calculate_sk22_logic(df):
     # [1] RSI & Stochastic RSI
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
-    alpha = 1 / 14
-    avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, 0.00001)
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -54,7 +47,7 @@ def calculate_sk22_logic(df):
     df['d'] = df['k'].rolling(window=3).mean()
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     
-    # [2] ระบบหาระยะ CHoCH
+    # [2] ระบบหาระยะ CHoCH (แบบ Fast Fix)
     df['is_ph'] = df['high'][(df['high'].shift(SWING_LOOKBACK) < df['high']) & (df['high'].shift(-SWING_LOOKBACK) < df['high'])]
     df['is_pl'] = df['low'][(df['low'].shift(SWING_LOOKBACK) > df['low']) & (df['low'].shift(-SWING_LOOKBACK) > df['low'])]
     df['last_ph'] = df['is_ph'].ffill()
@@ -62,16 +55,14 @@ def calculate_sk22_logic(df):
     df['is_choch_up'] = (df['close'] > df['last_ph'].shift(1))
     df['is_choch_down'] = (df['close'] < df['last_pl'].shift(1))
     
-    # [3] ระบบนับแท่ง Bars Since CHoCH
     def bars_since(series):
         indices = np.where(series)[0]
-        if len(indices) == 0: return 999
-        return (len(series) - 1) - indices[-1]
+        return (len(series) - 1) - indices[-1] if len(indices) > 0 else 999
 
     bars_since_up = bars_since(df['is_choch_up'])
     bars_since_down = bars_since(df['is_choch_down'])
     
-    # [4] Divergence
+    # [3] Divergence (เช็คย้อนหลัง 10 แท่ง)
     df['bull_div'] = (df['low'] < df['low'].shift(10)) & (df['rsi'] > df['rsi'].shift(10))
     df['bear_div'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
     
@@ -84,46 +75,41 @@ def check_signal():
     
     for symbol in SYMBOLS:
         try:
-            print(f"🔍 {symbol}", end=" ", flush=True)
             bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
             df = pd.DataFrame(bars, columns=['time','open','high','low','close','vol'])
-            ticker = exchange.fetch_ticker(symbol)
-            df.at[df.index[-1], 'close'] = ticker['last']
             
             df, bars_since_up, bars_since_down = calculate_sk22_logic(df)
             last, prev = df.iloc[-1], df.iloc[-2]
 
-            long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
-                          (last['k'] < 25 or last['bull_div']) and \
+            # ปรับจูนเงื่อนไขให้ไวขึ้น (K < 35 และ CHOCH_WINDOW 40)
+            long_trigger = (last['k'] > last['d']) and \
+                          (last['k'] < 35 or last['bull_div']) and \
                           (last['rsi'] >= prev['rsi']) and \
                           (bars_since_up <= CHOCH_WINDOW)
 
-            short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
-                           (last['k'] > 75 or last['bear_div']) and \
+            short_trigger = (last['k'] < last['d']) and \
+                           (last['k'] > 65 or last['bear_div']) and \
                            (last['rsi'] <= prev['rsi']) and \
                            (bars_since_down <= CHOCH_WINDOW)
 
-            # --- ส่วนที่เพิ่มใหม่: คำนวณราคา SL (อิงจาก 2 แท่งล่าสุด) ---
-            sl_long = df['low'].tail(2).min()
-            sl_short = df['high'].tail(2).max()
+            sl_long = round(df['low'].tail(2).min(), 4)
+            sl_short = round(df['high'].tail(2).max(), 4)
 
-            print(f"| K: {last['k']:.2f} | Up: {bars_since_up} | Down: {bars_since_down}", end=" ")
+            print(f"🔍 {symbol} | K: {last['k']:.2f} | Up: {bars_since_up}", end=" ")
 
             if long_trigger:
-                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_long}*\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_up} bars ago"
+                msg = f"🚀 *[LONG {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_long}*\n🕒 Time: {now_thai}"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             elif short_trigger:
-                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_short}*\n🕒 Time: {now_thai}\n✨ CHoCH: {bars_since_down} bars ago"
+                msg = f"🔻 *[SHORT {symbol} 15m]*\n💰 Entry: {last['close']}\n🛑 *SL: {sl_short}*\n🕒 Time: {now_thai}"
                 send_all_alerts(msg)
                 print("✅ [SIGNAL!]")
             else:
-                print("❌ No fresh signal")
+                print("❌ No signal")
 
         except Exception as e:
             print(f"⚠️ Error: {e}")
-
-    print(f"--- [FINISH] ---")
 
 if __name__ == "__main__":
     check_signal()

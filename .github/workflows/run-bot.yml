@@ -1,17 +1,19 @@
-name: SK22-24H-Run
+name: SK22-15M-BOT
 
 on:
   schedule:
-    # รันทุก 20 นาที ตลอด 24 ชั่วโมง (ไม่ต้องคำนวณเวลาไทยให้งง)
-    # 0,20,40 คือนาทีที่รัน / * คือทุกชั่วโมง / * * * คือทุกวันทุกเดือน
-    - cron: '0,20,40 * * * *'
+    # ทุก 15 นาทีเป๊ะ (UTC)
+    # เวลาไทย = UTC+7
+    - cron: '0,15,30,45 * * * *'
   workflow_dispatch:
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,7 +26,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run bot
+      - name: Show run time (UTC & TH)
+        run: |
+          echo "UTC Time:"
+          date -u
+          echo "Thai Time:"
+          TZ=Asia/Bangkok date
+
+      - name: Run trading bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
@@ -33,4 +42,5 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
-        run: python bot.py
+        run: |
+          python bot.py

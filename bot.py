@@ -37,7 +37,7 @@ def today_str():
     return thai_now().strftime('%Y-%m-%d')
 
 def is_sleep_time():
-    return 0 <= thai_now().hour < 6  # 00:00–05:59
+    return 0 <= thai_now().hour < 6
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -105,7 +105,6 @@ def run():
     state = load_state()
     today = today_str()
 
-    # 🔔 แจ้งตอนตื่น 06:00 ครั้งเดียว
     if thai_now().hour == 6 and state.get("wakeup") != today:
         notify("☀️ BOT WAKE UP | 06:00 TH")
         state["wakeup"] = today
@@ -121,10 +120,7 @@ def run():
 
     for sym in SYMBOLS:
         if sym not in ex.markets:
-            print(f"⚠️ {sym} NOT AVAILABLE — SKIP")
             continue
-
-        print(f"\n⏳ SCANNING {sym} | {thai_time()}")
 
         df = pd.DataFrame(
             ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
@@ -137,36 +133,35 @@ def run():
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
         downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
 
-        print(
-            f"Trend | Up:{uptrend} Down:{downtrend} | "
-            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{last['close']}"
-        )
+        entry = last['close']
 
-        price = round(last['close'], 4)
-
-        # ---------- LONG ----------
+        # ===== LONG =====
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
-            sl = round(price * 0.985, 4)
-            tp = round(price * 1.03, 4)
-            notify(
-                f"📈 LONG {sym}\n"
-                f"Entry: {price}\n"
-                f"SL: {sl}\n"
-                f"TP: {tp}\n"
-                f"🕒 {thai_time()}"
-            )
+            sl = prev['low']
+            tp = entry + (entry - sl) * 2
 
-        # ---------- SHORT ----------
-        if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
-            sl = round(price * 1.015, 4)
-            tp = round(price * 0.97, 4)
-            notify(
-                f"📉 SHORT {sym}\n"
-                f"Entry: {price}\n"
-                f"SL: {sl}\n"
-                f"TP: {tp}\n"
-                f"🕒 {thai_time()}"
+            msg = (
+                f"📈 LONG {sym}\n"
+                f"🕒 {thai_time()}\n\n"
+                f"Entry: {entry:.4f}\n"
+                f"SL: {sl:.4f}\n"
+                f"TP: {tp:.4f}"
             )
+            notify(msg)
+
+        # ===== SHORT =====
+        if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
+            sl = prev['high']
+            tp = entry - (sl - entry) * 2
+
+            msg = (
+                f"📉 SHORT {sym}\n"
+                f"🕒 {thai_time()}\n\n"
+                f"Entry: {entry:.4f}\n"
+                f"SL: {sl:.4f}\n"
+                f"TP: {tp:.4f}"
+            )
+            notify(msg)
 
     print(f"\n✅ RUN FINISHED | {thai_time()}")
 

@@ -2,15 +2,14 @@ name: SK22-15M-BOT
 
 on:
   schedule:
-    # ทุก 15 นาทีเป๊ะ (UTC)
-    # เวลาไทย = UTC+7
+    # ทุก 15 นาที (UTC)
     - cron: '0,15,30,45 * * * *'
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
 
     steps:
       - name: Checkout repository
@@ -26,11 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Show run time (UTC & TH)
+      - name: Show run time
         run: |
-          echo "UTC Time:"
+          echo "UTC:"
           date -u
-          echo "Thai Time:"
+          echo "TH:"
           TZ=Asia/Bangkok date
 
       - name: Run trading bot

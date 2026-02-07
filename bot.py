@@ -142,11 +142,31 @@ def run():
             f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{last['close']}"
         )
 
-        if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
-            notify(f"📈 LONG {sym}\n🕒 {thai_time()}")
+        price = round(last['close'], 4)
 
+        # ---------- LONG ----------
+        if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
+            sl = round(price * 0.985, 4)
+            tp = round(price * 1.03, 4)
+            notify(
+                f"📈 LONG {sym}\n"
+                f"Entry: {price}\n"
+                f"SL: {sl}\n"
+                f"TP: {tp}\n"
+                f"🕒 {thai_time()}"
+            )
+
+        # ---------- SHORT ----------
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
-            notify(f"📉 SHORT {sym}\n🕒 {thai_time()}")
+            sl = round(price * 1.015, 4)
+            tp = round(price * 0.97, 4)
+            notify(
+                f"📉 SHORT {sym}\n"
+                f"Entry: {price}\n"
+                f"SL: {sl}\n"
+                f"TP: {tp}\n"
+                f"🕒 {thai_time()}"
+            )
 
     print(f"\n✅ RUN FINISHED | {thai_time()}")
 

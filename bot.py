@@ -30,11 +30,11 @@ TZ_TH = pytz.timezone('Asia/Bangkok')
 def thai_now():
     return datetime.datetime.now(TZ_TH)
 
-def today_str():
-    return thai_now().strftime('%Y-%m-%d')
-
 def thai_time():
     return thai_now().strftime('%Y-%m-%d %H:%M:%S')
+
+def today_str():
+    return thai_now().strftime('%Y-%m-%d')
 
 def is_sleep_time():
     return 0 <= thai_now().hour < 6  # 00:00–05:59
@@ -96,17 +96,18 @@ def indicators(df):
 
 # ---------- MAIN ----------
 def run():
-    print(f"🚀 RUN | {thai_time()}")
+    print(f"\n🚀 RUN START | {thai_time()}")
 
     if is_sleep_time():
-        print("🌙 SLEEP MODE")
+        print("🌙 SLEEP MODE (00:00–05:59 TH)")
         return
 
     state = load_state()
     today = today_str()
 
+    # 🔔 แจ้งตอนตื่น 06:00 ครั้งเดียว
     if thai_now().hour == 6 and state.get("wakeup") != today:
-        notify("☀️ BOT WAKE UP | 06:00")
+        notify("☀️ BOT WAKE UP | 06:00 TH")
         state["wakeup"] = today
         save_state(state)
 
@@ -120,18 +121,26 @@ def run():
 
     for sym in SYMBOLS:
         if sym not in ex.markets:
+            print(f"⚠️ {sym} NOT AVAILABLE — SKIP")
             continue
+
+        print(f"\n⏳ SCANNING {sym} | {thai_time()}")
 
         df = pd.DataFrame(
             ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
             columns=['t','open','high','low','close','v']
         )
-        df = indicators(df)
 
+        df = indicators(df)
         prev, last = df.iloc[-2], df.iloc[-1]
 
         uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
         downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
+
+        print(
+            f"Trend | Up:{uptrend} Down:{downtrend} | "
+            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{last['close']}"
+        )
 
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             notify(f"📈 LONG {sym}\n🕒 {thai_time()}")
@@ -139,8 +148,7 @@ def run():
         if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
             notify(f"📉 SHORT {sym}\n🕒 {thai_time()}")
 
-    save_state(state)
-    print("✅ DONE")
+    print(f"\n✅ RUN FINISHED | {thai_time()}")
 
 if __name__ == "__main__":
     run()

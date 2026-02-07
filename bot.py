@@ -1,5 +1,6 @@
 import os, ccxt, requests, json
 import pandas as pd
+import numpy as np
 import datetime, pytz
 
 # ================= CONFIG =================
@@ -75,22 +76,38 @@ def notify(msg):
     send_telegram(msg)
     send_pushover(msg)
 
-# ---------- INDICATORS ----------
+# ---------- INDICATORS (แก้ไขเงื่อนไขเพิ่มระบบ SK 22) ----------
 def indicators(df):
-    df['ema50'] = df['close'].ewm(span=50).mean()
-    df['ema200'] = df['close'].ewm(span=200).mean()
+    # EMA 200 (ใช้ดูแนวรับแนวต้าน)
+    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
+    # RSI & Stochastic RSI (ปรับให้แม่นยำขึ้น)
     delta = df['close'].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    rs = gain.ewm(alpha=1/14).mean() / loss.ewm(alpha=1/14).mean()
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
     df['rsi'] = 100 - (100 / (1 + rs))
 
     rsi_low = df['rsi'].rolling(14).min()
     rsi_high = df['rsi'].rolling(14).max()
-    stoch = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low)
+    stoch = 100 * (df['rsi'] - rsi_low) / (rsi_high - rsi_low).replace(0, 0.00001)
     df['k'] = stoch.rolling(3).mean()
     df['d'] = df['k'].rolling(3).mean()
+
+    # ATR สำหรับ SL เส้นสีเงิน (ATR 1.5)
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['atr'] = true_range.rolling(14).mean()
+
+    # ระบบ Divergence
+    df['is_bull_div'] = (df['low'].shift(1).rolling(5).min() < df['low'].shift(10).rolling(5).min()) & \
+                        (df['rsi'].shift(1).rolling(5).min() > df['rsi'].shift(10).rolling(5).min())
+    df['is_bear_div'] = (df['high'].shift(1).rolling(5).max() > df['high'].shift(10).rolling(5).max()) & \
+                        (df['rsi'].shift(1).rolling(5).max() < df['rsi'].shift(10).rolling(5).max())
 
     return df
 
@@ -135,23 +152,28 @@ def run():
 
         entry = last['close']
 
-        uptrend = entry > last['ema200'] and last['ema50'] > last['ema200']
-        downtrend = entry < last['ema200'] and last['ema50'] < last['ema200']
+        # --- แก้ไขเงื่อนไข Trigger: ถอด EMA กรองออก เพื่อให้เข้าได้ไวตามหน้าจอ TradingView ---
+        # LONG: K ตัด D ขึ้น และ (K < 25 หรือ มี Bull Div)
+        long_trigger = (prev['k'] <= prev['d'] and last['k'] > last['d']) and \
+                      (last['k'] < 25 or (last['is_bull_div'] and last['k'] < 50)) and \
+                      (last['rsi'] >= prev['rsi'])
+
+        # SHORT: K ตัด D ลง และ (K > 75 หรือ มี Bear Div)
+        short_trigger = (prev['k'] >= prev['d'] and last['k'] < last['d']) and \
+                       (last['k'] > 75 or (last['is_bear_div'] and last['k'] > 50)) and \
+                       (last['rsi'] <= prev['rsi'])
 
         print(
-            f"Trend | Up:{uptrend} Down:{downtrend} | "
-            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{entry}"
+            f"Stats | K:{last['k']:.1f} D:{last['d']:.1f} RSI:{last['rsi']:.1f} | "
+            f"BullDiv:{last['is_bull_div']} BearDiv:{last['is_bear_div']}"
         )
 
         # ===== LONG =====
-        if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
-            sl = prev['low']
-            tp = entry + (entry - sl) * 2
+        if long_trigger:
+            sl = round(entry - (last['atr'] * 1.5), 4)
+            tp = round(entry + (entry - sl) * 2, 4)
 
-            print(
-                f"✅ LONG SIGNAL {sym} | "
-                f"K cross UP & K<40 | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}"
-            )
+            print(f"✅ LONG SIGNAL {sym} | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}")
 
             notify(
                 f"📈 LONG {sym}\n"
@@ -162,14 +184,11 @@ def run():
             )
 
         # ===== SHORT =====
-        elif downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
-            sl = prev['high']
-            tp = entry - (sl - entry) * 2
+        elif short_trigger:
+            sl = round(entry + (last['atr'] * 1.5), 4)
+            tp = round(entry - (sl - entry) * 2, 4)
 
-            print(
-                f"✅ SHORT SIGNAL {sym} | "
-                f"K cross DOWN & K>60 | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}"
-            )
+            print(f"✅ SHORT SIGNAL {sym} | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}")
 
             notify(
                 f"📉 SHORT {sym}\n"

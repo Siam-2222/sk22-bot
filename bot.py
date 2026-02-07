@@ -120,7 +120,10 @@ def run():
 
     for sym in SYMBOLS:
         if sym not in ex.markets:
+            print(f"⚠️ {sym} NOT AVAILABLE")
             continue
+
+        print(f"\n⏳ SCANNING {sym} | {thai_time()}")
 
         df = pd.DataFrame(
             ex.fetch_ohlcv(sym, TIMEFRAME, limit=200),
@@ -130,38 +133,54 @@ def run():
         df = indicators(df)
         prev, last = df.iloc[-2], df.iloc[-1]
 
-        uptrend = last['close'] > last['ema200'] and last['ema50'] > last['ema200']
-        downtrend = last['close'] < last['ema200'] and last['ema50'] < last['ema200']
-
         entry = last['close']
+
+        uptrend = entry > last['ema200'] and last['ema50'] > last['ema200']
+        downtrend = entry < last['ema200'] and last['ema50'] < last['ema200']
+
+        print(
+            f"Trend | Up:{uptrend} Down:{downtrend} | "
+            f"K:{last['k']:.1f} D:{last['d']:.1f} Close:{entry}"
+        )
 
         # ===== LONG =====
         if uptrend and prev['k'] < prev['d'] and last['k'] > last['d'] and last['k'] < 40:
             sl = prev['low']
             tp = entry + (entry - sl) * 2
 
-            msg = (
+            print(
+                f"✅ LONG SIGNAL {sym} | "
+                f"K cross UP & K<40 | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}"
+            )
+
+            notify(
                 f"📈 LONG {sym}\n"
                 f"🕒 {thai_time()}\n\n"
                 f"Entry: {entry:.4f}\n"
                 f"SL: {sl:.4f}\n"
                 f"TP: {tp:.4f}"
             )
-            notify(msg)
 
         # ===== SHORT =====
-        if downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
+        elif downtrend and prev['k'] > prev['d'] and last['k'] < last['d'] and last['k'] > 60:
             sl = prev['high']
             tp = entry - (sl - entry) * 2
 
-            msg = (
+            print(
+                f"✅ SHORT SIGNAL {sym} | "
+                f"K cross DOWN & K>60 | Entry:{entry:.4f} SL:{sl:.4f} TP:{tp:.4f}"
+            )
+
+            notify(
                 f"📉 SHORT {sym}\n"
                 f"🕒 {thai_time()}\n\n"
                 f"Entry: {entry:.4f}\n"
                 f"SL: {sl:.4f}\n"
                 f"TP: {tp:.4f}"
             )
-            notify(msg)
+
+        else:
+            print("❌ NO SIGNAL")
 
     print(f"\n✅ RUN FINISHED | {thai_time()}")
 
